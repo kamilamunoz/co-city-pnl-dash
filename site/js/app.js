@@ -241,9 +241,9 @@ function renderTable() {
   body.innerHTML = '';
 
   const revByMonth = {};
-  for (const m of meses) revByMonth[m] = (dataRegion[m] || {})['gmv_sin_hc100'] || 0;
+  for (const m of meses) revByMonth[m] = (dataRegion[m] || {})['gmv_habi'] || 0;
 
-  const showPctRow = (row) => !['invoiced_sales', 'gmv_habi', 'fee_hc100', 'gmv_sin_hc100'].includes(row.key);
+  const showPctRow = (row) => !['invoiced_sales', 'gmv_habi'].includes(row.key);
 
   for (const row of structureFiltered) {
     const tr = document.createElement('tr');
@@ -507,7 +507,7 @@ function renderCmpInsights(regionesSel, sums) {
     if (raw === undefined || raw === null) return null;
     if (kpi.key === 'invoiced_sales') return raw;
     if (kpi.norm === 'pct') {
-      const rev = sums[region]['gmv_sin_hc100'] || 0;
+      const rev = sums[region]['gmv_habi'] || 0;
       if (!rev) return null;
       return raw / rev;
     }
@@ -626,7 +626,7 @@ function renderCmp() {
   const revenueByRegion = {};
   const nidsByRegion = {};
   for (const r of [...regionesSel, 'Total']) {
-    revenueByRegion[r] = sums[r]['gmv_sin_hc100'] || 0;
+    revenueByRegion[r] = sums[r]['gmv_habi'] || 0;
     nidsByRegion[r] = sums[r]['invoiced_sales'] || 0;
   }
 
