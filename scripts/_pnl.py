@@ -238,10 +238,12 @@ def _line_values(df: pd.DataFrame, vista: str) -> dict[str, pd.Series]:
         + lines["commercial"]
     )
     lines["unlevered_profit"] = lines["gross_profit"] + lines["direct_costs"]
-    if is_sint:
-        lines["financing_costs"] = -pick("financing_costs_ue", "financing_costs_accounting")
-    else:
-        lines["financing_costs"] = -_num(df["financing_costs_accounting"])
+    # Financing: suma explícita fiduciary_selling_comission + model (aplicada a ambas vistas).
+    # `financing_costs_accounting` está vacío desde 2024 y `_ue` coincide 1:1 con fiduciary_selling_comission.
+    lines["financing_costs"] = -(
+        _num(df["financing_costs_fiduciary_selling_comission"])
+        + _num(df["financing_costs_model"])
+    )
     lines["contribution_margin"] = lines["unlevered_profit"] + lines["financing_costs"]
 
     return lines

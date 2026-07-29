@@ -119,6 +119,7 @@ select
     financing_costs_model,
     financing_costs_accounting,
     financing_costs_ue,
+    financing_costs_fiduciary_selling_comission,
     financing___pp___sp_estimate_financing as financing_estimate,
     financing_rate,
 
