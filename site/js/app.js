@@ -31,7 +31,7 @@ const state = {
 };
 
 // líneas NO clickables (son sumas o counts, no tienen NIDs propios)
-const NON_DRILLABLE = new Set(['invoiced_sales']);
+const NON_DRILLABLE = new Set(['invoiced_sales', 'holding_days']);
 
 // ─── login ────────────────────────────────────────────────────────────
 function unlockUI() {
@@ -206,8 +206,12 @@ function mesesToShow() {
   return all.slice(-n);
 }
 
-function fmt(v, isCount = false) {
+function fmt(v, isCount = false, isDays = false) {
   if (v === null || v === undefined) return '—';
+  if (isDays) {
+    if (!isFinite(v) || v === 0) return '—';
+    return `${Math.round(v).toLocaleString('es-CO')} d`;
+  }
   if (isCount) return Math.round(v).toLocaleString('es-CO');
   // CO reporta en COP millones (unidades absolutas dividido por 1_000_000).
   const inMillion = v / 1_000_000;
@@ -243,7 +247,7 @@ function renderTable() {
   const revByMonth = {};
   for (const m of meses) revByMonth[m] = (dataRegion[m] || {})['gmv_habi'] || 0;
 
-  const showPctRow = (row) => !['invoiced_sales', 'gmv_habi'].includes(row.key);
+  const showPctRow = (row) => !['invoiced_sales', 'gmv_habi', 'holding_days'].includes(row.key);
 
   for (const row of structureFiltered) {
     const tr = document.createElement('tr');
@@ -255,14 +259,15 @@ function renderTable() {
       const cell = (dataRegion[m] || {})[row.key];
       const val = cell === undefined ? null : cell;
       const isCount = row.sign === 'count';
+      const isDays = row.sign === 'days_avg';
       const cellEl = document.createElement('td');
       cellEl.classList.add(`signo-${row.sign}`);
 
       if (showPctRow(row) && val !== null && revByMonth[m]) {
         const pct = val / revByMonth[m];
-        cellEl.innerHTML = `${fmt(val, isCount)}<br><span class="pct">${fmtPct(pct)}</span>`;
+        cellEl.innerHTML = `${fmt(val, isCount, isDays)}<br><span class="pct">${fmtPct(pct)}</span>`;
       } else {
-        cellEl.textContent = fmt(val, isCount);
+        cellEl.textContent = fmt(val, isCount, isDays);
       }
 
       if (!NON_DRILLABLE.has(row.key) && !row.pendiente && val !== null && val !== 0) {
@@ -480,15 +485,29 @@ function setupCmpControls() {
   });
 }
 
-// Suma los valores de las líneas del P&L para una región en un rango de meses
+// Suma los valores de las líneas del P&L para una región en un rango de meses.
+// Para líneas con sign='days_avg' se recalcula como promedio ponderado por
+// invoiced_sales (evita sumar días de meses distintos).
+const AVG_KEYS = new Set(['holding_days']);
 function sumRegionInRange(region, meses, vista) {
   const dataR = (state.data.vistas[vista] || {})[region] || {};
   const acc = {};
+  const avgNumer = {};  // por-key: Σ (avg_mes × nids_mes)
+  const avgDenom = {};  // por-key: Σ nids_mes
   for (const m of meses) {
     const row = dataR[m] || {};
+    const nidsMes = row['invoiced_sales'] || 0;
     for (const k of Object.keys(row)) {
-      acc[k] = (acc[k] || 0) + row[k];
+      if (AVG_KEYS.has(k)) {
+        avgNumer[k] = (avgNumer[k] || 0) + row[k] * nidsMes;
+        avgDenom[k] = (avgDenom[k] || 0) + nidsMes;
+      } else {
+        acc[k] = (acc[k] || 0) + row[k];
+      }
     }
+  }
+  for (const k of Object.keys(avgNumer)) {
+    acc[k] = avgDenom[k] > 0 ? avgNumer[k] / avgDenom[k] : 0;
   }
   return acc;
 }
@@ -644,6 +663,8 @@ function renderCmp() {
 
   const applyMetric = (val, region, row) => {
     if (val === null || val === undefined) return null;
+    // days_avg siempre se muestra en días absolutos (no % ni per-NID).
+    if (row.sign === 'days_avg') return val;
     if (state.cmpMetrica === 'pct') {
       const base = revenueByRegion[region];
       if (!base || !isFinite(base) || row.sign === 'count') return null;
@@ -660,6 +681,7 @@ function renderCmp() {
   const fmtCell = (val, row) => {
     if (val === null || val === undefined) return '—';
     if (row.sign === 'count') return Math.round(val).toLocaleString('es-CO');
+    if (row.sign === 'days_avg') return fmt(val, false, true);
     if (state.cmpMetrica === 'pct') return fmtPct(val);
     if (state.cmpMetrica === 'per_nid') return fmtAbs(val);
     return fmt(val);
@@ -669,12 +691,12 @@ function renderCmp() {
   // debajo del valor (mismo patrón que la tabla principal). Para pct/per_nid no
   // hace falta porque el propio valor ya es un ratio/unit.
   const showPctBelow = state.cmpMetrica === 'abs';
-  const pctExcluded = new Set(['invoiced_sales', 'gmv_habi']);
+  const pctExcluded = new Set(['invoiced_sales', 'gmv_habi', 'holding_days']);
   const renderCellValue = (rawVal, val, row, region) => {
     if (val === null || val === undefined) return '—';
     const base = fmtCell(val, row);
     if (!showPctBelow) return base;
-    if (pctExcluded.has(row.key) || row.sign === 'count') return base;
+    if (pctExcluded.has(row.key) || row.sign === 'count' || row.sign === 'days_avg') return base;
     const rev = revenueByRegion[region];
     if (!rev || !isFinite(rev)) return base;
     const pct = rawVal / rev;

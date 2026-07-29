@@ -114,6 +114,7 @@ PNL_STRUCTURE = [
     {"key": "hol_maintenance", "label": "Mantenimiento (Aseo+Arreglos)", "parent": "holding", "type": "subcuenta", "sign": "cost"},
     {"key": "hol_predial", "label": "Predial (Property Taxes)", "parent": "holding", "type": "subcuenta", "sign": "cost"},
     {"key": "holding", "label": "Holding Costs", "parent": None, "type": "rubro", "sign": "cost"},
+    {"key": "holding_days", "label": "Días promedio en inventario", "parent": None, "type": "kpi", "sign": "days_avg"},
 
     # ── commercial · external ──
     {"key": "com_ext_sellers", "label": "Comisiones externas sellers (Compra)", "parent": "external_commissions", "type": "subcuenta", "sign": "cost"},
@@ -214,6 +215,10 @@ def _line_values(df: pd.DataFrame, vista: str) -> dict[str, pd.Series]:
         lines["hol_admin"] + lines["hol_utilities"]
         + lines["hol_maintenance"] + lines["hol_predial"]
     )
+    # Días en inventario por-NID. La agregación por (region, mes) se convierte
+    # a promedio en aggregate() dividiendo por el conteo de NIDs con valor no nulo.
+    lines["holding_days"] = pd.to_numeric(df["days_on_inventory"], errors="coerce").fillna(0.0)
+    lines["_holding_days_count"] = pd.to_numeric(df["days_on_inventory"], errors="coerce").notna().astype(float)
 
     # ── commercial · external ──
     lines["com_ext_sellers"] = -pick("buying_broker_comissions_ue", "buying_broker_comissions_accounting")
@@ -263,6 +268,22 @@ def line_values_per_nid(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
     return wide
 
 
+# Columnas cuyo agregado es promedio (no suma). Cada una tiene su columna
+# hermana `_{key}_count` con el conteo de filas donde el valor original era no nulo.
+AVG_COLUMNS = {"holding_days": "_holding_days_count"}
+
+
+def _post_avg(grouped: pd.DataFrame) -> pd.DataFrame:
+    """Convierte SUM(col) / SUM(count) para las columnas de promedio, luego
+    elimina las columnas técnicas `_{key}_count`."""
+    for col, count_col in AVG_COLUMNS.items():
+        if col in grouped.columns and count_col in grouped.columns:
+            denom = grouped[count_col].where(grouped[count_col] > 0, other=pd.NA)
+            grouped[col] = (grouped[col] / denom).fillna(0.0)
+            grouped.drop(columns=[count_col], inplace=True)
+    return grouped
+
+
 def aggregate(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
     """Devuelve DataFrame long: columnas [region, mes, key, valor]."""
     lines = _line_values(df_prepared, vista)
@@ -270,6 +291,7 @@ def aggregate(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
     wide["region"] = df_prepared["region_norm"].values
     wide["mes"] = df_prepared["mes"].values
     grouped = wide.groupby(["region", "mes"], as_index=False).sum(numeric_only=True)
+    grouped = _post_avg(grouped)
     long = grouped.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
     return long
 
@@ -281,6 +303,7 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
     wide = pd.DataFrame(lines)
     wide["mes"] = df_prepared["mes"].values
     total = wide.groupby("mes", as_index=False).sum(numeric_only=True)
+    total = _post_avg(total)
     total["region"] = "Total"
     total_long = total.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
     return pd.concat([by_region, total_long], ignore_index=True)
