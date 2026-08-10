@@ -3,12 +3,18 @@ para las dos vistas (ACC y Sintético), y escribe site/data/kpi_pnl.json.
 
 Uso:
     make refresh
+
+Opcional:
+    MES_CUTOFF=YYYY-MM   Excluye meses posteriores al cutoff (inclusive el mes
+                         siguiente). Sirve para no publicar meses parciales
+                         cuando el tracker CO trae días del mes en curso.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -72,6 +78,13 @@ def main() -> None:
     log.info("Preparando (mes + region_norm) ...")
     df = prepare(raw)
     log.info("Después de prepare: %d filas (excluidas %d por fecha nula)", len(df), len(raw) - len(df))
+
+    mes_cutoff = os.environ.get("MES_CUTOFF", "").strip()
+    if mes_cutoff:
+        antes = len(df)
+        df = df.loc[df["mes"] <= mes_cutoff].copy()
+        log.info("Cutoff %s aplicado: %d filas (excluidas %d de meses posteriores)",
+                 mes_cutoff, len(df), antes - len(df))
 
     regiones = _region_labels(df)
     log.info("Regiones finales: %s", [r["key"] for r in regiones])
