@@ -13,6 +13,7 @@ const REPORTER_NAME = 'Kamila (dashboard CO P&L)';
 const state = {
   data: null,          // kpi_pnl.json
   facts: null,         // kpi_pnl_facts.json
+  consData: null,      // kpi_pnl_consolidated.json (MM + Inmo + HC + Local OpEx)
   // último drill abierto (para el botón de reporte)
   lastDrill: null,     // { row, contextLabel, alertItems, total, vista }
   // tab 1: P&L por región
@@ -22,12 +23,22 @@ const state = {
   year: null,          // int (cuando rango==='year')
   rangeFrom: null,     // 'YYYY-MM' (cuando rango==='range')
   rangeTo: null,       // 'YYYY-MM'
+  expanded: new Set(),
   // tab 2: comparativa
   activeTab: 'pnl',
+  cmpSource: 'mm',     // 'mm' | 'consolidado'
   cmpVista: 'acc',
   cmpPeriodo: '3m',
   cmpRegiones: new Set(),
   cmpMetrica: 'abs',
+  // tab 3: consolidado MM + Inmo + HC
+  consVista: 'acc',
+  consRegion: 'Total',
+  consRango: '12',
+  consYear: null,
+  consRangeFrom: null,
+  consRangeTo: null,
+  consExpanded: new Set(),
 };
 
 // líneas NO clickables (son sumas o counts, no tienen NIDs propios)
@@ -64,12 +75,14 @@ function setupLogin() {
 
 // ─── data load ────────────────────────────────────────────────────────
 async function loadData() {
-  const [pnl, facts] = await Promise.all([
+  const [pnl, facts, cons] = await Promise.all([
     fetch(`data/kpi_pnl.json?v=${Date.now()}`).then(r => r.json()),
     fetch(`data/kpi_pnl_facts.json?v=${Date.now()}`).then(r => r.json()),
+    fetch(`data/kpi_pnl_consolidated.json?v=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   state.data = pnl;
   state.facts = facts;
+  state.consData = cons;
 
   // por default, seleccionar todas las regiones reales (sin Total) para comparativa
   state.cmpRegiones = new Set(
@@ -98,7 +111,9 @@ function setupTabs() {
       document.querySelectorAll('.tab-btn').forEach(x => x.classList.toggle('active', x === b));
       document.getElementById('tab-pnl').hidden = t !== 'pnl';
       document.getElementById('tab-comparativa').hidden = t !== 'comparativa';
+      document.getElementById('tab-consolidado').hidden = t !== 'consolidado';
       if (t === 'comparativa') renderCmp();
+      if (t === 'consolidado') renderConsolidated();
     });
   });
 }
@@ -233,7 +248,24 @@ function renderTable() {
   const structure = state.data.estructura;
   const dataRegion = state.data.vistas[state.vista][state.region] || {};
 
-  const filaVisible = (row) => !row.vista || row.vista === state.vista;
+  const byKey = {};
+  for (const r of structure) byKey[r.key] = r;
+  const hasChildren = new Set();
+  for (const r of structure) if (r.parent) hasChildren.add(r.parent);
+  const chainExpanded = (row) => {
+    let cur = row;
+    while (cur && cur.parent) {
+      if (!state.expanded.has(cur.parent)) return false;
+      cur = byKey[cur.parent];
+    }
+    return true;
+  };
+
+  const isTotalView = state.region === 'Total';
+  const filaVisible = (row) =>
+    (!row.vista || row.vista === state.vista) &&
+    (!row.only_total || isTotalView) &&
+    chainExpanded(row);
   const structureFiltered = structure.filter(filaVisible);
 
   const head = document.getElementById('pnlHead');
@@ -253,7 +285,33 @@ function renderTable() {
     const tr = document.createElement('tr');
     tr.className = `tipo-${row.type}`;
     if (row.pendiente) tr.classList.add('pendiente');
-    tr.appendChild(td(row.label));
+
+    // label + toggle si expandible + ⓘ si tiene note
+    const labelTd = document.createElement('td');
+    if (hasChildren.has(row.key)) {
+      const isExp = state.expanded.has(row.key);
+      const tog = document.createElement('span');
+      tog.className = 'toggle';
+      tog.textContent = isExp ? '▼' : '▶';
+      labelTd.appendChild(tog);
+      labelTd.appendChild(document.createTextNode(' ' + row.label));
+      labelTd.classList.add('expandable');
+      labelTd.addEventListener('click', () => {
+        if (state.expanded.has(row.key)) state.expanded.delete(row.key);
+        else state.expanded.add(row.key);
+        renderTable();
+      });
+    } else {
+      labelTd.textContent = row.label;
+    }
+    if (row.note) {
+      const info = document.createElement('span');
+      info.className = 'row-note';
+      info.textContent = 'ⓘ';
+      info.title = row.note;
+      labelTd.appendChild(info);
+    }
+    tr.appendChild(labelTd);
 
     for (const m of meses) {
       const cell = (dataRegion[m] || {})[row.key];
@@ -263,6 +321,10 @@ function renderTable() {
       const cellEl = document.createElement('td');
       cellEl.classList.add(`signo-${row.sign}`);
 
+      if (row.type === 'total' && row.sign === 'net' && val !== null && val > 0) {
+        cellEl.classList.add('positivo-highlight');
+      }
+
       if (showPctRow(row) && val !== null && revByMonth[m]) {
         const pct = val / revByMonth[m];
         cellEl.innerHTML = `${fmt(val, isCount, isDays)}<br><span class="pct">${fmtPct(pct)}</span>`;
@@ -270,7 +332,11 @@ function renderTable() {
         cellEl.textContent = fmt(val, isCount, isDays);
       }
 
-      if (!NON_DRILLABLE.has(row.key) && !row.pendiente && val !== null && val !== 0) {
+      const drillable = !NON_DRILLABLE.has(row.key)
+        && !row.pendiente
+        && !row.extern
+        && val !== null && val !== 0;
+      if (drillable) {
         cellEl.classList.add('clickable');
         cellEl.addEventListener('click', () => openDrill(row, m));
       }
@@ -439,15 +505,54 @@ function cmpMesLabel(meses) {
   return `${meses[0]} → ${meses[meses.length - 1]} (${meses.length} meses)`;
 }
 
+// Config por fuente para la tab de comparativa. `state.cmpSource` decide cuál se usa.
+function cmpSourceConfig() {
+  if (state.cmpSource === 'consolidado' && state.consData) {
+    return {
+      data: state.consData,
+      revenueKey: 'cons_gmv_total',
+      nidsKey: 'cons_props_total',
+      pctExcluded: new Set([
+        'cons_props_mm', 'cons_props_inmo', 'cons_props_hc', 'cons_props_total',
+        'cons_gmv_mm', 'cons_gmv_inmo', 'cons_gmv_hc', 'cons_gmv_total',
+      ]),
+      insightKPIs: [
+        { key: 'cons_cm_mm',           label: 'CM MM',                mode: 'income', norm: 'pct' },
+        { key: 'cons_cm_inmo',         label: 'CM Inmo',              mode: 'income', norm: 'pct' },
+        { key: 'cons_cm_hc',           label: 'Margen Neto HC',       mode: 'income', norm: 'pct' },
+        { key: 'cons_cm_total',        label: 'CM Total',             mode: 'income', norm: 'pct' },
+        { key: 'net_city_contribution', label: 'Net City Contribution', mode: 'income', norm: 'pct' },
+      ],
+      profitLines: new Set(['cons_cm_mm', 'cons_cm_inmo', 'cons_cm_hc', 'cons_cm_total', 'net_city_contribution']),
+      drillable: false,
+    };
+  }
+  return {
+    data: state.data,
+    revenueKey: 'gmv_habi',
+    nidsKey: 'invoiced_sales',
+    pctExcluded: new Set(['invoiced_sales', 'gmv_habi', 'holding_days']),
+    insightKPIs: [
+      { key: 'gross_profit',       label: 'Gross Profit',         mode: 'income', norm: 'pct' },
+      { key: 'direct_costs',       label: 'Direct Costs',         mode: 'cost',   norm: 'pct' },
+      { key: 'contribution_margin', label: 'Contribution Margin', mode: 'income', norm: 'pct' },
+    ],
+    profitLines: new Set(),
+    drillable: true,
+  };
+}
+
 function renderCmpRegionCtrl() {
   const el = document.getElementById('cmpRegionCtrl');
   el.innerHTML = '';
-  for (const r of state.data.regiones) {
-    if (r.key === 'Total') continue;  // Total no es seleccionable, siempre se muestra al final
+  const cfg = cmpSourceConfig();
+  for (const r of cfg.data.regiones) {
+    if (r.key === 'Total') continue;
     const b = document.createElement('button');
     b.className = 'seg-btn' + (state.cmpRegiones.has(r.key) ? ' active' : '');
     b.dataset.region = r.key;
-    b.textContent = r.label + ` (${r.filas.toLocaleString('es-CO')})`;
+    const filasStr = r.filas ? ` (${r.filas.toLocaleString('es-CO')})` : '';
+    b.textContent = r.label + filasStr;
     b.addEventListener('click', () => {
       if (state.cmpRegiones.has(r.key)) state.cmpRegiones.delete(r.key);
       else state.cmpRegiones.add(r.key);
@@ -459,6 +564,15 @@ function renderCmpRegionCtrl() {
 }
 
 function setupCmpControls() {
+  document.querySelectorAll('#cmpSourceCtrl .seg-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.cmpSource = b.dataset.source;
+      document.querySelectorAll('#cmpSourceCtrl .seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      renderCmpRegionCtrl();
+      renderCmp();
+    });
+  });
   document.querySelectorAll('#cmpVistaCtrl .seg-btn').forEach(b => {
     b.addEventListener('click', () => {
       state.cmpVista = b.dataset.vista;
@@ -489,8 +603,9 @@ function setupCmpControls() {
 // Para líneas con sign='days_avg' se recalcula como promedio ponderado por
 // invoiced_sales (evita sumar días de meses distintos).
 const AVG_KEYS = new Set(['holding_days']);
-function sumRegionInRange(region, meses, vista) {
-  const dataR = (state.data.vistas[vista] || {})[region] || {};
+function sumRegionInRange(region, meses, vista, dataObj) {
+  dataObj = dataObj || state.data;
+  const dataR = (dataObj.vistas[vista] || {})[region] || {};
   const acc = {};
   const avgNumer = {};  // por-key: Σ (avg_mes × nids_mes)
   const avgDenom = {};  // por-key: Σ nids_mes
@@ -515,7 +630,7 @@ function sumRegionInRange(region, meses, vista) {
 // Genera cajitas de insight comparando regiones seleccionadas.
 // `higherIsBetter` define si mayor valor = mejor (ingresos) o peor (costos).
 // Cada tarjeta encuentra la región líder vs rezagada + delta.
-function renderCmpInsights(regionesSel, sums) {
+function renderCmpInsights(regionesSel, sums, cfg) {
   const el = document.getElementById('cmpInsights');
   el.innerHTML = '';
 
@@ -524,21 +639,14 @@ function renderCmpInsights(regionesSel, sums) {
     return;
   }
 
-  // KPIs a comparar: key, label, mode ('income' o 'cost'), normalize (siempre pct del revenue)
-  const KPIS = [
-    { key: 'gross_profit', label: 'Gross Profit', mode: 'income', norm: 'pct' },
-    { key: 'gp_sin_iva', label: 'Gross Profit sin IVA', mode: 'income', norm: 'pct' },
-    { key: 'direct_costs', label: 'Direct Costs', mode: 'cost', norm: 'pct' },
-    { key: 'contribution_margin', label: 'Contribution Margin', mode: 'income', norm: 'pct' },
-  ];
+  const KPIS = cfg.insightKPIs;
+  const revenueKey = cfg.revenueKey;
 
-  // valor para comparación (respeta la métrica global salvo para NIDs que siempre es abs)
   const valueFor = (region, kpi) => {
     const raw = sums[region][kpi.key];
     if (raw === undefined || raw === null) return null;
-    if (kpi.key === 'invoiced_sales') return raw;
     if (kpi.norm === 'pct') {
-      const rev = sums[region]['gmv_habi'] || 0;
+      const rev = sums[region][revenueKey] || 0;
       if (!rev) return null;
       return raw / rev;
     }
@@ -621,21 +729,23 @@ function renderCmpInsights(regionesSel, sums) {
 }
 
 function renderCmp() {
+  const cfg = cmpSourceConfig();
   const meses = cmpMesesRange();
+  const sourceLabel = state.cmpSource === 'consolidado' ? 'Consolidado (MM + Inmo + HC)' : 'MM';
   document.getElementById('cmpContext').textContent =
-    `${state.cmpVista === 'acc' ? 'ACC' : 'Sintético'} · ${cmpMesLabel(meses)} · ${state.cmpMetrica === 'abs' ? 'COP MM (con % del Revenue debajo)' : state.cmpMetrica === 'pct' ? '% del Revenue de la región' : 'COP por NID facturado'}`;
+    `${sourceLabel} · ${state.cmpVista === 'acc' ? 'ACC' : 'Sintético'} · ${cmpMesLabel(meses)} · ${state.cmpMetrica === 'abs' ? 'COP MM (con % del Revenue debajo)' : state.cmpMetrica === 'pct' ? '% del Revenue de la región' : 'COP por transacción'}`;
 
-  const regionesSel = state.data.regiones
+  const regionesSel = cfg.data.regiones
     .filter(r => r.key !== 'Total' && state.cmpRegiones.has(r.key))
     .map(r => r.key);
 
   // sumar por región + Total
   const sums = {};
-  for (const r of regionesSel) sums[r] = sumRegionInRange(r, meses, state.cmpVista);
-  sums['Total'] = sumRegionInRange('Total', meses, state.cmpVista);
+  for (const r of regionesSel) sums[r] = sumRegionInRange(r, meses, state.cmpVista, cfg.data);
+  sums['Total'] = sumRegionInRange('Total', meses, state.cmpVista, cfg.data);
 
   // insights (comparaciones entre las regiones seleccionadas)
-  renderCmpInsights(regionesSel, sums);
+  renderCmpInsights(regionesSel, sums, cfg);
 
   // header
   const head = document.getElementById('cmpHead');
@@ -647,18 +757,16 @@ function renderCmp() {
   // body
   const body = document.getElementById('cmpBody');
   body.innerHTML = '';
-  // en comparativa mostramos SOLO conceptos grandes (kpi / rubro / total),
-  // no subcuentas ni grupos
   const BIG_TYPES = new Set(['kpi', 'rubro', 'total']);
-  const structure = state.data.estructura.filter(row =>
+  const structure = cfg.data.estructura.filter(row =>
     (!row.vista || row.vista === state.cmpVista) && BIG_TYPES.has(row.type)
   );
 
   const revenueByRegion = {};
   const nidsByRegion = {};
   for (const r of [...regionesSel, 'Total']) {
-    revenueByRegion[r] = sums[r]['gmv_habi'] || 0;
-    nidsByRegion[r] = sums[r]['invoiced_sales'] || 0;
+    revenueByRegion[r] = sums[r][cfg.revenueKey] || 0;
+    nidsByRegion[r] = sums[r][cfg.nidsKey] || 0;
   }
 
   const applyMetric = (val, region, row) => {
@@ -691,7 +799,7 @@ function renderCmp() {
   // debajo del valor (mismo patrón que la tabla principal). Para pct/per_nid no
   // hace falta porque el propio valor ya es un ratio/unit.
   const showPctBelow = state.cmpMetrica === 'abs';
-  const pctExcluded = new Set(['invoiced_sales', 'gmv_habi', 'holding_days']);
+  const pctExcluded = cfg.pctExcluded;
   const renderCellValue = (rawVal, val, row, region) => {
     if (val === null || val === undefined) return '—';
     const base = fmtCell(val, row);
@@ -732,6 +840,10 @@ function renderCmp() {
       }
     }
 
+    const isProfitTotal =
+      (row.type === 'total' && row.sign === 'net') ||
+      cfg.profitLines.has(row.key);
+
     for (const r of regionesSel) {
       const raw = sums[r][row.key];
       const val = raw === undefined ? null : applyMetric(raw, r, row);
@@ -739,8 +851,9 @@ function renderCmp() {
       cell.className = `region-col signo-${row.sign}`;
       if (r === best) cell.classList.add('best');
       if (r === worst) cell.classList.add('worst');
+      if (isProfitTotal && val !== null && val > 0) cell.classList.add('positivo-highlight');
       cell.innerHTML = renderCellValue(raw, val, row, r);
-      if (!NON_DRILLABLE.has(row.key) && !row.pendiente && val !== null && val !== 0) {
+      if (cfg.drillable && !NON_DRILLABLE.has(row.key) && !row.pendiente && val !== null && val !== 0) {
         cell.classList.add('clickable');
         cell.addEventListener('click', () => openCmpDrill(row, r, meses));
       }
@@ -751,6 +864,7 @@ function renderCmp() {
     const totalVal = totalRaw === undefined ? null : applyMetric(totalRaw, 'Total', row);
     const totalCell = document.createElement('td');
     totalCell.className = `region-col total-col signo-${row.sign}`;
+    if (isProfitTotal && totalVal !== null && totalVal > 0) totalCell.classList.add('positivo-highlight');
     totalCell.innerHTML = renderCellValue(totalRaw, totalVal, row, 'Total');
     tr.appendChild(totalCell);
 
@@ -965,6 +1079,220 @@ function setupReportButton() {
   document.getElementById('reportBtn').addEventListener('click', sendReport);
 }
 
+// ─── tab 3: consolidado MM + Inmo + HabiCredit ────────────────────────
+function renderConsRegionCtrl() {
+  const el = document.getElementById('consRegionCtrl');
+  if (!el || !state.consData) return;
+  el.innerHTML = '';
+  for (const r of state.consData.regiones) {
+    const b = document.createElement('button');
+    b.className = 'seg-btn' + (r.key === state.consRegion ? ' active' : '');
+    b.dataset.region = r.key;
+    b.textContent = r.label;
+    b.addEventListener('click', () => {
+      state.consRegion = r.key;
+      el.querySelectorAll('.seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      renderConsolidated();
+    });
+    el.appendChild(b);
+  }
+}
+
+function setupConsControls() {
+  if (!state.consData) return;
+  document.querySelectorAll('#consVistaCtrl .seg-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.consVista = b.dataset.vista;
+      document.querySelectorAll('#consVistaCtrl .seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      renderConsolidated();
+    });
+  });
+  document.querySelectorAll('#consRangoCtrl .seg-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.consRango = b.dataset.rango;
+      document.querySelectorAll('#consRangoCtrl .seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      document.getElementById('consYearSubCtrl').hidden = state.consRango !== 'year';
+      document.getElementById('consRangeSubCtrl').hidden = state.consRango !== 'range';
+      renderConsolidated();
+    });
+  });
+
+  const yearCtrl = document.getElementById('consYearCtrl');
+  const years = Array.from(new Set(state.consData.meses.map(m => m.slice(0, 4)))).sort();
+  state.consYear = state.consYear || years[years.length - 1];
+  yearCtrl.innerHTML = '';
+  for (const y of years) {
+    const b = document.createElement('button');
+    b.className = 'seg-btn' + (y === state.consYear ? ' active' : '');
+    b.dataset.year = y;
+    b.textContent = y;
+    b.addEventListener('click', () => {
+      state.consYear = y;
+      yearCtrl.querySelectorAll('.seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      renderConsolidated();
+    });
+    yearCtrl.appendChild(b);
+  }
+
+  const fromSel = document.getElementById('consRangeFrom');
+  const toSel = document.getElementById('consRangeTo');
+  const opts = state.consData.meses.map(m => `<option value="${m}">${m}</option>`).join('');
+  fromSel.innerHTML = opts;
+  toSel.innerHTML = opts;
+  state.consRangeFrom = state.consRangeFrom || state.consData.meses[0];
+  state.consRangeTo = state.consRangeTo || state.consData.meses[state.consData.meses.length - 1];
+  fromSel.value = state.consRangeFrom;
+  toSel.value = state.consRangeTo;
+  fromSel.addEventListener('change', () => {
+    state.consRangeFrom = fromSel.value;
+    if (state.consRangeFrom > state.consRangeTo) {
+      state.consRangeTo = state.consRangeFrom;
+      toSel.value = state.consRangeTo;
+    }
+    renderConsolidated();
+  });
+  toSel.addEventListener('change', () => {
+    state.consRangeTo = toSel.value;
+    if (state.consRangeTo < state.consRangeFrom) {
+      state.consRangeFrom = state.consRangeTo;
+      fromSel.value = state.consRangeFrom;
+    }
+    renderConsolidated();
+  });
+}
+
+function consMesesToShow() {
+  if (!state.consData) return [];
+  const all = state.consData.meses;
+  if (state.consRango === 'all') return all;
+  if (state.consRango === 'year') return all.filter(m => m.startsWith(state.consYear + '-'));
+  if (state.consRango === 'range') return all.filter(m => m >= state.consRangeFrom && m <= state.consRangeTo);
+  const n = parseInt(state.consRango, 10);
+  return all.slice(-n);
+}
+
+function renderConsolidated() {
+  if (!state.consData) {
+    const body = document.getElementById('consBody');
+    if (body) body.innerHTML = '<tr><td colspan="99">No hay datos consolidados. Corre <code>make refresh</code>.</td></tr>';
+    return;
+  }
+  const meses = consMesesToShow();
+  const structure = state.consData.estructura;
+  const dataRegion = (state.consData.vistas[state.consVista] || {})[state.consRegion] || {};
+
+  const byKey = {};
+  for (const r of structure) byKey[r.key] = r;
+  const hasChildren = new Set();
+  for (const r of structure) if (r.parent) hasChildren.add(r.parent);
+  const chainExpanded = (row) => {
+    let cur = row;
+    while (cur && cur.parent) {
+      if (!state.consExpanded.has(cur.parent)) return false;
+      cur = byKey[cur.parent];
+    }
+    return true;
+  };
+
+  const isTotalView = state.consRegion === 'Total';
+  const filaVisible = (row) =>
+    (!row.only_total || isTotalView) && chainExpanded(row);
+  const structureFiltered = structure.filter(filaVisible);
+
+  const head = document.getElementById('consHead');
+  head.innerHTML = '';
+  head.appendChild(th('P&L Consolidado (COP MM)'));
+  for (const m of meses) head.appendChild(th(m));
+
+  const body = document.getElementById('consBody');
+  body.innerHTML = '';
+
+  const revByMonth = {};
+  for (const m of meses) revByMonth[m] = (dataRegion[m] || {})['cons_gmv_total'] || 0;
+
+  const showPctRow = (row) =>
+    !['cons_props_mm', 'cons_props_inmo', 'cons_props_hc', 'cons_props_total',
+      'cons_gmv_mm', 'cons_gmv_inmo', 'cons_gmv_hc', 'cons_gmv_total'].includes(row.key)
+    && row.sign !== 'count';
+
+  for (const row of structureFiltered) {
+    const tr = document.createElement('tr');
+    tr.className = `tipo-${row.type}`;
+    if (row.pendiente) tr.classList.add('pendiente');
+
+    const labelTd = document.createElement('td');
+    if (hasChildren.has(row.key)) {
+      const isExp = state.consExpanded.has(row.key);
+      const tog = document.createElement('span');
+      tog.className = 'toggle';
+      tog.textContent = isExp ? '▼' : '▶';
+      labelTd.appendChild(tog);
+      labelTd.appendChild(document.createTextNode(' ' + row.label));
+      labelTd.classList.add('expandable');
+      labelTd.addEventListener('click', () => {
+        if (state.consExpanded.has(row.key)) state.consExpanded.delete(row.key);
+        else state.consExpanded.add(row.key);
+        renderConsolidated();
+      });
+    } else {
+      labelTd.textContent = row.label;
+    }
+    if (row.note) {
+      const info = document.createElement('span');
+      info.className = 'row-note';
+      info.textContent = 'ⓘ';
+      info.title = row.note;
+      labelTd.appendChild(info);
+    }
+    tr.appendChild(labelTd);
+
+    for (const m of meses) {
+      const cell = (dataRegion[m] || {})[row.key];
+      const val = cell === undefined ? null : cell;
+      const isCount = row.sign === 'count';
+      const cellEl = document.createElement('td');
+      cellEl.classList.add(`signo-${row.sign}`);
+
+      const isProfitLine =
+        (row.type === 'total' && row.sign === 'net') ||
+        row.key === 'cons_cm_mm' || row.key === 'cons_cm_inmo' || row.key === 'cons_cm_hc';
+      if (isProfitLine && val !== null && val > 0) {
+        cellEl.classList.add('positivo-highlight');
+      }
+
+      if (showPctRow(row) && val !== null && revByMonth[m]) {
+        const pct = val / revByMonth[m];
+        cellEl.innerHTML = `${fmt(val, isCount)}<br><span class="pct">${fmtPct(pct)}</span>`;
+      } else {
+        cellEl.textContent = fmt(val, isCount);
+      }
+
+      if (row.extern && val === null) {
+        cellEl.title = 'Sin dato en fuente externa (Lis/Danibot) para este mes';
+      }
+
+      tr.appendChild(cellEl);
+    }
+    body.appendChild(tr);
+  }
+
+  const lo = ((state.consData.meta || {}).local_opex) || {};
+  const inmoMeta = ((state.consData.meta || {}).inmo) || {};
+  const hcMeta = ((state.consData.meta || {}).habicredit) || {};
+  const bits = [];
+  if (lo.payroll_cobertura_hasta) bits.push(`payroll hasta ${lo.payroll_cobertura_hasta} (Lis)`);
+  if (lo.rent_cobertura_hasta) bits.push(`rent hasta ${lo.rent_cobertura_hasta} (Danibot, FX ${lo.fx_cop_per_usd})`);
+  if (inmoMeta.inmo_generado_en) bits.push(`Inmo generado ${inmoMeta.inmo_generado_en.slice(0,10)}`);
+  if (hcMeta.hc_generado_en) bits.push(`HabiCredit generado ${hcMeta.hc_generado_en.slice(0,10)}`);
+  if (lo.marketing_pendiente) bits.push(`marketing <b>pendiente</b>`);
+  document.getElementById('consNota').innerHTML =
+    bits.length ? `<span style="color:var(--muted)">ⓘ</span> ${bits.join(' · ')}.` : '';
+}
+
 // ─── init ─────────────────────────────────────────────────────────────
 async function init() {
   await loadData();
@@ -974,6 +1302,8 @@ async function init() {
   setupTabs();
   setupCmpControls();
   renderCmpRegionCtrl();
+  setupConsControls();
+  renderConsRegionCtrl();
   setupDrill();
   setupReportButton();
   renderTable();

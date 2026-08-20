@@ -30,6 +30,10 @@ MIN_ROWS_PER_REGION = 50
 # Los NIDs con region NULL — en CO son casi cero, pero por consistencia con MX
 DEFAULT_REGION_FOR_NULLS = "Sin región"
 LABEL_OTROS = "Otros"
+# Alias de región cross-source. En CO no hay fusiones pendientes (a diferencia de
+# MX donde CDMX → EDO MEX), pero sí normalizamos el naming de HabiCredit que usa
+# "Valle de Aburrá" (D minúscula) vs "Valle De Aburrá" del tracker MM/Inmo.
+REGION_ALIASES = {"Valle de Aburrá": "Valle De Aburrá"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -307,3 +311,153 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
     total["region"] = "Total"
     total_long = total.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
     return pd.concat([by_region, total_long], ignore_index=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# estructura del waterfall CONSOLIDADO (tab MM + Inmo + HabiCredit)
+# ─────────────────────────────────────────────────────────────────────────────
+# Suma las 3 líneas de negocio CO por región×mes y aplica Local OpEx UNA sola
+# vez al final (payroll/rent sirven a las 3 líneas, no solo a MM).
+# "Volumen Intermediado" = GMV MM + GMV Inmo + Valor Desembolsado HC
+# (conceptos heterogéneos — es un headline number, no un revenue estricto).
+
+_RENT_ONLY_TOTAL_CO = ("rent_masterlease", "rent_nacional")
+
+PNL_STRUCTURE_CONSOLIDATED = [
+    # ── conteos ──
+    {"key": "cons_props_mm", "label": "# Properties MM", "parent": "cons_props_total", "type": "kpi", "sign": "count"},
+    {"key": "cons_props_inmo", "label": "# Properties Inmo", "parent": "cons_props_total", "type": "kpi", "sign": "count"},
+    {"key": "cons_props_hc", "label": "# Desembolsos HabiCredit", "parent": "cons_props_total", "type": "kpi", "sign": "count"},
+    {"key": "cons_props_total", "label": "# Transacciones Total", "parent": None, "type": "total", "sign": "count"},
+
+    # ── volumen intermediado (heterogéneo: precio venta + comisión + préstamo) ──
+    {"key": "cons_gmv_mm", "label": "GMV MM (precio de venta)", "parent": "cons_gmv_total", "type": "kpi", "sign": "income"},
+    {"key": "cons_gmv_inmo", "label": "GMV Inmo (comisión bruta)", "parent": "cons_gmv_total", "type": "kpi", "sign": "income"},
+    {"key": "cons_gmv_hc", "label": "Valor Desembolsado HabiCredit", "parent": "cons_gmv_total", "type": "kpi", "sign": "income",
+     "note": "Valor total de préstamos originados en el mes. No es venta ni comisión — se suma al 'Volumen Intermediado' como headline number, pero conceptualmente es heterogéneo respecto a GMV MM (precio de venta) y GMV Inmo (comisión de brokerage)."},
+    {"key": "cons_gmv_total", "label": "(=) Volumen Intermediado", "parent": None, "type": "total", "sign": "income",
+     "note": "Suma de conceptos heterogéneos (precio de venta MM + comisión Inmo + valor de préstamos HC). Útil como headline; no interpretar como revenue comparable línea a línea."},
+
+    # ── contribution por línea ──
+    {"key": "cons_cm_mm", "label": "Contribution Margin MM", "parent": "cons_cm_total", "type": "kpi", "sign": "net"},
+    {"key": "cons_cm_inmo", "label": "Contribution Margin Inmo", "parent": "cons_cm_total", "type": "kpi", "sign": "net"},
+    {"key": "cons_cm_hc", "label": "Margen Neto HabiCredit", "parent": "cons_cm_total", "type": "kpi", "sign": "net"},
+    {"key": "cons_cm_total", "label": "(=) Contribution Margin Total", "parent": None, "type": "total", "sign": "net"},
+
+    # ── local OpEx ──
+    {"key": "payroll_local", "label": "Payroll local", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "rent_atribuible", "label": "Rent (atribuible por ciudad)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "rent_masterlease", "label": "Rent Master-lease Nacional (PA CORFICOL)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
+     "note": "PATRIMONIOS AUTONOMOS FIDUCIARIA CORFICOLOMBIANA S.A. es un contrato de master-lease nacional sin metadata de ciudad. Representa ~66% del Rent CO YTD — se muestra combinado solo en el consolidado."},
+    {"key": "rent_nacional", "label": "Rent Nacional / no atribuible", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
+     "note": "Proveedores de servicios sin ciudad atribuible (Casalimpia, Comcel, otros terceros nacionales). Cubre <15% del Rent CO. Solo visible en el consolidado."},
+    {"key": "rent", "label": "Rent", "parent": "local_opex", "type": "grupo", "sign": "cost", "extern": True},
+    {"key": "marketing_city", "label": "Marketing (ciudad)", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True, "pendiente": True,
+     "note": "Pendiente: query BQ con desglose por ciudad. Actualmente todo Marketing CO cae en cuenta 53010105 sin granularidad geográfica."},
+    {"key": "local_opex", "label": "(-) Local OpEx", "parent": None, "type": "rubro", "sign": "cost", "extern": True,
+     "note": "Payroll + Rent + Marketing city-level. Sirve a MM, Inmo y HabiCredit simultáneamente, por eso se aplica UNA sola vez sobre la Contribution Total."},
+    {"key": "net_city_contribution", "label": "(=) Net City Contribution", "parent": None, "type": "total", "sign": "net", "extern": True},
+]
+
+
+def build_consolidated_long(
+    mm_long: pd.DataFrame,
+    inmo_long: pd.DataFrame | None,
+    hc_long: pd.DataFrame | None,
+    opex_long: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Construye el waterfall consolidado MM + Inmo + HabiCredit + Local OpEx.
+
+    - `mm_long` es la salida de `aggregate_all_regions(df_mm, vista)`.
+    - `inmo_long` [region, mes, key, valor] con keys de Inmo (contribution_margin,
+      gmv_inmobiliaria, properties).
+    - `hc_long` [region, mes, key, valor] con keys de HC (cant_desembolsos,
+      valor_desembolsado, margen_neto). Naming ya normalizado por REGION_ALIASES.
+    - `opex_long` [region, mes, key, valor] con payroll_local, rent_atribuible,
+      rent_masterlease, rent_nacional.
+
+    Reglas:
+    - Contribution Total = CM MM + CM Inmo + Margen Neto HC.
+    - Volumen Intermediado = GMV MM + GMV Inmo + Valor Desembolsado HC.
+    - # Total = # MM + # Inmo + # HC.
+    - Rent = rent_atribuible + master-lease (0 si falta) + nacional (0 si falta).
+    - local_opex = payroll + rent + marketing (marketing=0 mientras pendiente).
+      Requiere payroll y rent_atribuible presentes.
+    - net_city_contribution = cons_cm_total + local_opex (emite null si falta local_opex).
+    """
+    mm_by_cell: dict[tuple[str, str], dict[str, float]] = {}
+    mm_keys = {"invoiced_sales", "gmv_habi", "contribution_margin"}
+    for row in mm_long.itertuples():
+        if row.key in mm_keys:
+            mm_by_cell.setdefault((row.region, row.mes), {})[row.key] = float(row.valor)
+
+    inmo_by_cell: dict[tuple[str, str], dict[str, float]] = {}
+    if inmo_long is not None and len(inmo_long) > 0:
+        for row in inmo_long.itertuples():
+            inmo_by_cell.setdefault((row.region, row.mes), {})[row.key] = float(row.valor)
+
+    hc_by_cell: dict[tuple[str, str], dict[str, float]] = {}
+    if hc_long is not None and len(hc_long) > 0:
+        for row in hc_long.itertuples():
+            hc_by_cell.setdefault((row.region, row.mes), {})[row.key] = float(row.valor)
+
+    opex_by_cell: dict[tuple[str, str], dict[str, float]] = {}
+    if opex_long is not None and len(opex_long) > 0:
+        for row in opex_long.itertuples():
+            opex_by_cell.setdefault((row.region, row.mes), {})[row.key] = float(row.valor)
+
+    all_cells = set(mm_by_cell.keys()) | set(inmo_by_cell.keys()) | set(hc_by_cell.keys())
+    new_rows: list[dict] = []
+    for (region, mes) in all_cells:
+        mm = mm_by_cell.get((region, mes), {})
+        inmo = inmo_by_cell.get((region, mes), {})
+        hc = hc_by_cell.get((region, mes), {})
+
+        props_mm = mm.get("invoiced_sales", 0.0)
+        props_inmo = inmo.get("properties", 0.0)
+        props_hc = hc.get("cant_desembolsos", 0.0)
+        gmv_mm = mm.get("gmv_habi", 0.0)
+        gmv_inmo = inmo.get("gmv_inmobiliaria", 0.0)
+        gmv_hc = hc.get("valor_desembolsado", 0.0)
+        cm_mm = mm.get("contribution_margin", 0.0)
+        cm_inmo = inmo.get("contribution_margin", 0.0)
+        cm_hc = hc.get("margen_neto", 0.0)
+
+        new_rows.extend([
+            {"region": region, "mes": mes, "key": "cons_props_mm", "valor": props_mm},
+            {"region": region, "mes": mes, "key": "cons_props_inmo", "valor": props_inmo},
+            {"region": region, "mes": mes, "key": "cons_props_hc", "valor": props_hc},
+            {"region": region, "mes": mes, "key": "cons_props_total", "valor": props_mm + props_inmo + props_hc},
+            {"region": region, "mes": mes, "key": "cons_gmv_mm", "valor": gmv_mm},
+            {"region": region, "mes": mes, "key": "cons_gmv_inmo", "valor": gmv_inmo},
+            {"region": region, "mes": mes, "key": "cons_gmv_hc", "valor": gmv_hc},
+            {"region": region, "mes": mes, "key": "cons_gmv_total", "valor": gmv_mm + gmv_inmo + gmv_hc},
+            {"region": region, "mes": mes, "key": "cons_cm_mm", "valor": cm_mm},
+            {"region": region, "mes": mes, "key": "cons_cm_inmo", "valor": cm_inmo},
+            {"region": region, "mes": mes, "key": "cons_cm_hc", "valor": cm_hc},
+            {"region": region, "mes": mes, "key": "cons_cm_total", "valor": cm_mm + cm_inmo + cm_hc},
+        ])
+
+        cells = opex_by_cell.get((region, mes), {})
+        for k, v in cells.items():
+            new_rows.append({"region": region, "mes": mes, "key": k, "valor": v})
+
+        if "rent_atribuible" in cells:
+            rent_val = cells["rent_atribuible"] + sum(cells.get(k, 0.0) for k in _RENT_ONLY_TOTAL_CO)
+            new_rows.append({"region": region, "mes": mes, "key": "rent", "valor": rent_val})
+
+        if "payroll_local" in cells and "rent_atribuible" in cells:
+            local_opex_val = (
+                cells["payroll_local"]
+                + cells["rent_atribuible"]
+                + sum(cells.get(k, 0.0) for k in _RENT_ONLY_TOTAL_CO)
+                + cells.get("marketing_city", 0.0)
+            )
+            new_rows.append({"region": region, "mes": mes, "key": "local_opex", "valor": local_opex_val})
+            new_rows.append({
+                "region": region, "mes": mes,
+                "key": "net_city_contribution",
+                "valor": (cm_mm + cm_inmo + cm_hc) + local_opex_val,
+            })
+
+    return pd.DataFrame(new_rows) if new_rows else pd.DataFrame(columns=["region", "mes", "key", "valor"])
