@@ -321,7 +321,7 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
 # "Volumen Intermediado" = GMV MM + GMV Inmo + Valor Desembolsado HC
 # (conceptos heterogéneos — es un headline number, no un revenue estricto).
 
-_RENT_ONLY_TOTAL_CO = ("rent_masterlease", "rent_nacional")
+_RENT_ONLY_TOTAL_CO = ("rent_nacional",)
 
 PNL_STRUCTURE_CONSOLIDATED = [
     # ── conteos ──
@@ -346,11 +346,10 @@ PNL_STRUCTURE_CONSOLIDATED = [
 
     # ── local OpEx ──
     {"key": "payroll_local", "label": "Payroll local", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True},
-    {"key": "rent_atribuible", "label": "Rent (atribuible por ciudad)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True},
-    {"key": "rent_masterlease", "label": "Rent Master-lease Nacional (PA CORFICOL)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
-     "note": "PATRIMONIOS AUTONOMOS FIDUCIARIA CORFICOLOMBIANA S.A. es un contrato de master-lease nacional sin metadata de ciudad. Representa ~66% del Rent CO YTD — se muestra combinado solo en el consolidado."},
+    {"key": "rent_atribuible", "label": "Rent (atribuible por ciudad)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True,
+     "note": "Anclas vendor→ciudad de Danibot (docs/agrupaciones_por_ciudad.md): PATRIMONIOS AUTONOMOS FIDUCIARIA CORFICOLOMBIANA y EDIFICIO FIJAR 93B → Bogotá; INVERASTORGA → Valle De Aburrá; MUÑOZ ZEIGEN + EMPRESAS MUNICIPALES CALI → Cali; CUBICUS → Barranquilla. Cobertura ~87% del Rent CO."},
     {"key": "rent_nacional", "label": "Rent Nacional / no atribuible", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
-     "note": "Proveedores de servicios sin ciudad atribuible (Casalimpia, Comcel, otros terceros nacionales). Cubre <15% del Rent CO. Solo visible en el consolidado."},
+     "note": "Servicios compartidos sin sede específica (Casalimpia -aseo-, Comcel, Digital Corp, Prosegur -vigilancia-, Supplies, y cola menor). Cubre ~13% del Rent CO. Solo visible en el consolidado porque no se puede atribuir a una ciudad."},
     {"key": "rent", "label": "Rent", "parent": "local_opex", "type": "grupo", "sign": "cost", "extern": True},
     {"key": "marketing_city", "label": "Marketing (ciudad)", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True, "pendiente": True,
      "note": "Pendiente: query BQ con desglose por ciudad. Actualmente todo Marketing CO cae en cuenta 53010105 sin granularidad geográfica."},

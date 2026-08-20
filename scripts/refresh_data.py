@@ -54,15 +54,18 @@ HABICREDIT_JSON_PATH = Path.home() / "Finanzas-Habi" / "habicredit-co-pnl-dash" 
 BLT_DASHBOARD_DATA = Path.home() / "Finanzas-Habi" / "blt-dashboard" / "data"
 FX_COP_PER_USD = 3900.0  # el mismo escalar exacto que usa Danibot en Seguimiento Terceros para CO
 
-# Rent CO — mapeo vendor → destino (según opex_terceros y rent_by_city_co de Danibot):
-# - "EDIFICIO FIJAR CENTRO 93B" (~12% Rent CO) → Bogotá (única ancla clara)
-# - "PATRIMONIOS AUTONOMOS FIDUCIARIA CORFICOLOMBIANA S A 800256769" (~66%) → master-lease
-# - todo lo demás → rent_nacional
+# Rent CO — mapeo vendor → destino según docs/agrupaciones_por_ciudad.md de Danibot.
+# Cobertura ~87% del Rent CO. El 13% restante (CASALIMPIA, COMCEL, DIGITAL CORP,
+# PROSEGUR, etc.) son servicios compartidos sin sede específica → rent_nacional.
 RENT_CO_VENDOR_TO_REGION = {
-    "EDIFICIO FIJAR CENTRO 93B- PROPIEDAD HORIZONTAL": "Bogotá",
-}
-RENT_CO_MASTERLEASE_VENDORS = {
-    "PATRIMONIOS AUTONOMOS FIDUCIARIA CORFICOLOMBIANA S A 800256769",
+    "PATRIMONIOS AUTONOMOS FIDUCIARIA CORFICOLOMBIANA S A 800256769": "Bogotá",   # master-lease oficina Bogotá, ~68% del rent
+    "EDIFICIO FIJAR CENTRO 93B- PROPIEDAD HORIZONTAL": "Bogotá",                   # admin Calle 93B
+    "INVERASTORGA S.A.S 901623740": "Valle De Aburrá",
+    "SAMUEL MUÑOZ ZEIGEN": "Cali",
+    "JUAN JACOBO MUÑOZ ZEIGEN 1007489032": "Cali",
+    "EMPRESAS MUNICIPALES DE CALI": "Cali",                                        # servicios públicos, no canon
+    "EMPRESAS MUNICIPALES DE CALI 890399003": "Cali",                              # variante nombre
+    "CUBICUS S.A.S. 900747881": "Barranquilla",
 }
 
 
@@ -161,9 +164,7 @@ def _load_local_opex_co() -> tuple[pd.DataFrame | None, dict]:
     rent_acum: dict[tuple[str, str, str], float] = {}
     for v in vendors:
         name = v["name"]
-        if name in RENT_CO_MASTERLEASE_VENDORS:
-            dest_region, fact_key = "Total", "rent_masterlease"
-        elif name in RENT_CO_VENDOR_TO_REGION:
+        if name in RENT_CO_VENDOR_TO_REGION:
             dest_region = _alias_region(RENT_CO_VENDOR_TO_REGION[name])
             fact_key = "rent_atribuible"
         else:
