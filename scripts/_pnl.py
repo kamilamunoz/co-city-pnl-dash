@@ -323,6 +323,18 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
 
 _RENT_ONLY_TOTAL_CO = ("rent_nacional",)
 
+# Sub-métricas del OpEx corporativo (bet_data_p2) — se suman al total `corp_opex`
+_CORP_OPEX_SUBS_CO = (
+    "corp_opex_sales_ops",
+    "corp_opex_tech",
+    "corp_opex_prof_fees",
+    "corp_opex_courier",
+    "corp_opex_travel",
+    "corp_opex_empl_rel",
+    "corp_opex_other",
+)
+_CORP_OPEX_ONLY_TOTAL_CO = ("corp_opex_nacional",)
+
 PNL_STRUCTURE_CONSOLIDATED = [
     # ── conteos ──
     {"key": "cons_props_mm", "label": "# Properties MM", "parent": "cons_props_total", "type": "kpi", "sign": "count"},
@@ -353,8 +365,22 @@ PNL_STRUCTURE_CONSOLIDATED = [
     {"key": "rent", "label": "Rent", "parent": "local_opex", "type": "grupo", "sign": "cost", "extern": True},
     {"key": "marketing_city", "label": "Marketing (ciudad)", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True,
      "note": "Marketing digital atribuido por área metropolitana (query BQ sobre sellers-main-prod.bi_co). Sirve a MM, Inmo y HabiCredit — por eso se resta solo en el consolidado."},
+
+    # ── OpEx corporativo (bet_data_p2, excluyendo payroll/mkt/rent y filas HABICREDIT/HABICAPITAL) ──
+    {"key": "corp_opex_sales_ops", "label": "Sales & Ops", "parent": "corp_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "corp_opex_tech", "label": "Tech", "parent": "corp_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "corp_opex_prof_fees", "label": "Professional Fees", "parent": "corp_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "corp_opex_courier", "label": "Courier & Transportation", "parent": "corp_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "corp_opex_travel", "label": "Travel Expenses", "parent": "corp_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "corp_opex_empl_rel", "label": "Employee Relations", "parent": "corp_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "corp_opex_other", "label": "Other - Local Expenses", "parent": "corp_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "corp_opex_nacional", "label": "OpEx Corp Nacional / no atribuible", "parent": "corp_opex", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
+     "note": "Filas de bet_data_p2 con c_ubicacion = 'COLOMBIA' o 'Global COL' (sin ciudad). Se muestra solo en Total. Fuente: `bet_data_p2` categoría '04. Opex', excluye Payroll/Marketing/Rent y filas etiquetadas HABICREDIT/HABICAPITAL."},
+    {"key": "corp_opex", "label": "OpEx Corporativo", "parent": "local_opex", "type": "grupo", "sign": "cost", "extern": True,
+     "note": "Tech + Professional Fees + Travel + Employee Relations + Courier + Sales&Ops + Other Local. Excluye HABICREDIT (doble-conteo con línea HC) y HABICAPITAL (otra entidad). Cobertura por ciudad ~40-60% del total; el resto va al bucket Nacional."},
+
     {"key": "local_opex", "label": "(-) Local OpEx", "parent": None, "type": "rubro", "sign": "cost", "extern": True,
-     "note": "Payroll + Rent + Marketing city-level. Sirve a MM, Inmo y HabiCredit simultáneamente, por eso se aplica UNA sola vez sobre la Contribution Total."},
+     "note": "Payroll + Rent + Marketing + OpEx Corporativo. Sirve a MM, Inmo y HabiCredit simultáneamente, por eso se aplica UNA sola vez sobre la Contribution Total."},
     {"key": "net_city_contribution", "label": "(=) Net City Contribution", "parent": None, "type": "total", "sign": "net", "extern": True},
 ]
 
@@ -445,12 +471,23 @@ def build_consolidated_long(
             rent_val = cells["rent_atribuible"] + sum(cells.get(k, 0.0) for k in _RENT_ONLY_TOTAL_CO)
             new_rows.append({"region": region, "mes": mes, "key": "rent", "valor": rent_val})
 
+        # corp_opex (grupo) = suma de sub-métricas + nacional (si aplica)
+        has_any_corp = any(k in cells for k in _CORP_OPEX_SUBS_CO + _CORP_OPEX_ONLY_TOTAL_CO)
+        corp_val = 0.0
+        if has_any_corp:
+            corp_val = (
+                sum(cells.get(k, 0.0) for k in _CORP_OPEX_SUBS_CO)
+                + sum(cells.get(k, 0.0) for k in _CORP_OPEX_ONLY_TOTAL_CO)
+            )
+            new_rows.append({"region": region, "mes": mes, "key": "corp_opex", "valor": corp_val})
+
         if "payroll_local" in cells and "rent_atribuible" in cells:
             local_opex_val = (
                 cells["payroll_local"]
                 + cells["rent_atribuible"]
                 + sum(cells.get(k, 0.0) for k in _RENT_ONLY_TOTAL_CO)
                 + cells.get("marketing_city", 0.0)
+                + corp_val
             )
             new_rows.append({"region": region, "mes": mes, "key": "local_opex", "valor": local_opex_val})
             new_rows.append({

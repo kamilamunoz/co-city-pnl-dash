@@ -43,9 +43,34 @@ log = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RAW_PATH = REPO_ROOT / "data" / "raw_apartment_co.parquet"
 RAW_MARKETING_PATH = REPO_ROOT / "data" / "raw_marketing_co.parquet"
+RAW_CORP_OPEX_PATH = REPO_ROOT / "data" / "raw_corp_opex_co.parquet"
 OUT_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl.json"
 OUT_FACTS_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_facts.json"
 OUT_CONSOLIDATED_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_consolidated.json"
+
+# Mapeo c_ubicacion (bet_data_p2) → region canónica CO
+CORP_OPEX_UBIC_TO_REGION = {
+    "BOGOTÁ": "Bogotá",
+    "MEDELLIN": "Valle De Aburrá",
+    "CALI": "Cali",
+    "BARRANQUILLA": "Barranquilla",
+    "CARTAGENA": "Otros",
+    "BUCARAMANGA": "Otros",
+    "ZIPAQUIRÁ": "Otros",
+    # `COLOMBIA` y `Global COL` → bucket nacional (only_total)
+}
+CORP_OPEX_NACIONAL_UBIC = {"COLOMBIA", "Global COL"}
+
+# m_metrica → fact_key en el schema consolidado
+CORP_OPEX_METRIC_TO_KEY = {
+    "03. Sales & Ops": "corp_opex_sales_ops",
+    "04. Tech": "corp_opex_tech",
+    "06. Professional fees": "corp_opex_prof_fees",
+    "07. Courier and Transportation": "corp_opex_courier",
+    "08. Travel Expenses": "corp_opex_travel",
+    "09. Employee Relations": "corp_opex_empl_rel",
+    "10. Other - Local Expenses": "corp_opex_other",
+}
 
 # JSONs de las otras 2 líneas de negocio (repos hermanos).
 INMO_JSON_PATH = Path.home() / "Finanzas-Habi" / "co-inmo-pnl-dash" / "site" / "data" / "kpi_pnl.json"
@@ -242,6 +267,61 @@ def _load_local_opex_co() -> tuple[pd.DataFrame | None, dict]:
     else:
         log.warning("data/raw_marketing_co.parquet no existe — corre `make raw_mkt`. Marketing = 0.")
         meta["marketing_cobertura_hasta"] = None
+
+    # ── OpEx corporativo (bet_data_p2) ────────────────────────────────
+    # Valores en COP absoluto (signo negativo = costo, mismo signo de bet_data_p2).
+    corp_max_mes: str | None = None
+    if RAW_CORP_OPEX_PATH.exists():
+        corp_df = pd.read_parquet(RAW_CORP_OPEX_PATH)
+        meta["corp_opex_filas"] = int(len(corp_df))
+
+        # Acumular por (region_final, mes, fact_key) para agregar cross-ubicacion
+        corp_acum: dict[tuple[str, str, str], float] = {}
+        ubic_no_mapeados: set[str] = set()
+        for row in corp_df.itertuples():
+            metric = row.m_metrica
+            fact_key = CORP_OPEX_METRIC_TO_KEY.get(metric)
+            if not fact_key:
+                continue  # métrica desconocida (defensivo)
+
+            ubic = row.c_ubicacion
+            mes_str = pd.to_datetime(row.mes).strftime("%Y-%m")
+            valor = float(row.actuals_cop)
+
+            if ubic in CORP_OPEX_UBIC_TO_REGION:
+                region = CORP_OPEX_UBIC_TO_REGION[ubic]
+                key = fact_key
+            elif ubic in CORP_OPEX_NACIONAL_UBIC:
+                region = "Total"
+                key = "corp_opex_nacional"
+            else:
+                ubic_no_mapeados.add(ubic)
+                region = "Total"
+                key = "corp_opex_nacional"
+
+            k = (region, mes_str, key)
+            corp_acum[k] = corp_acum.get(k, 0.0) + valor
+            if corp_max_mes is None or mes_str > corp_max_mes:
+                corp_max_mes = mes_str
+
+        if ubic_no_mapeados:
+            log.warning("Ubicaciones no mapeadas → corp_opex_nacional: %s", sorted(ubic_no_mapeados))
+
+        # Emitir + calcular contribución a Total por sub-métrica atribuible
+        total_corp_by_metric_mes: dict[tuple[str, str], float] = {}
+        for (region, mes, key), val in corp_acum.items():
+            rows.append({"region": region, "mes": mes, "key": key, "valor": val})
+            if key in CORP_OPEX_METRIC_TO_KEY.values() and region != "Total":
+                total_corp_by_metric_mes[(key, mes)] = total_corp_by_metric_mes.get((key, mes), 0.0) + val
+
+        # Sumar cada sub-métrica en Total (además del bucket nacional que ya se emitió)
+        for (key, mes), val in total_corp_by_metric_mes.items():
+            rows.append({"region": "Total", "mes": mes, "key": key, "valor": val})
+
+        meta["corp_opex_cobertura_hasta"] = corp_max_mes
+    else:
+        log.warning("data/raw_corp_opex_co.parquet no existe — corre `make raw_corp`. OpEx Corp = 0.")
+        meta["corp_opex_cobertura_hasta"] = None
 
     if not rows:
         return None, meta

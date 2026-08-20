@@ -20,6 +20,9 @@ raw:
 raw_mkt:
 	uv run python -m scripts.fetch_marketing_co
 
+raw_corp:
+	uv run python -m scripts.fetch_corp_opex_co
+
 refresh:
 	uv run python -m scripts.refresh_data
 
