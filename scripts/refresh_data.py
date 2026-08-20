@@ -42,6 +42,7 @@ log = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RAW_PATH = REPO_ROOT / "data" / "raw_apartment_co.parquet"
+RAW_MARKETING_PATH = REPO_ROOT / "data" / "raw_marketing_co.parquet"
 OUT_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl.json"
 OUT_FACTS_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_facts.json"
 OUT_CONSOLIDATED_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_consolidated.json"
@@ -216,9 +217,31 @@ def _load_local_opex_co() -> tuple[pd.DataFrame | None, dict]:
     for (r, m) in regions_with_payroll - regions_with_rent_atr:
         rows.append({"region": r, "mes": m, "key": "rent_atribuible", "valor": 0.0})
 
-    # Marketing CO: pendiente
-    meta["marketing_cobertura_hasta"] = None
-    meta["marketing_pendiente"] = "Query CO por ciudad pendiente"
+    # ── Marketing CO (query de Kamila sobre sellers-main-prod.bi_co) ─
+    # Valores en USD absolutos (no _K). Convertir a COP con FX 3900. Signo cost.
+    # Mapeo desde el query: 4 ciudades canónicas + Otros. `Valle de Aburrá` se
+    # normaliza a `Valle De Aburrá` vía REGION_ALIASES.
+    mkt_max_mes: str | None = None
+    if RAW_MARKETING_PATH.exists():
+        mkt_df = pd.read_parquet(RAW_MARKETING_PATH)
+        meta["marketing_filas"] = int(len(mkt_df))
+        total_mkt_by_mes: dict[str, float] = {}
+        for row in mkt_df.itertuples():
+            mes = pd.to_datetime(row.ir_mes_inversion).strftime("%Y-%m")
+            region = _alias_region(row.ir_area_metropolitana)
+            val_usd = float(row.ir_spend)
+            val_cop = -val_usd * FX_COP_PER_USD  # USD absoluto → COP
+            rows.append({"region": region, "mes": mes, "key": "marketing_city", "valor": val_cop})
+            total_mkt_by_mes[mes] = total_mkt_by_mes.get(mes, 0.0) + val_usd
+            if mkt_max_mes is None or mes > mkt_max_mes:
+                mkt_max_mes = mes
+        for mes, val_usd in total_mkt_by_mes.items():
+            rows.append({"region": "Total", "mes": mes, "key": "marketing_city",
+                         "valor": -val_usd * FX_COP_PER_USD})
+        meta["marketing_cobertura_hasta"] = mkt_max_mes
+    else:
+        log.warning("data/raw_marketing_co.parquet no existe — corre `make raw_mkt`. Marketing = 0.")
+        meta["marketing_cobertura_hasta"] = None
 
     if not rows:
         return None, meta
