@@ -358,6 +358,8 @@ PNL_STRUCTURE_CONSOLIDATED = [
 
     # ── local OpEx ──
     {"key": "payroll_local", "label": "Payroll local", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "headcount_local", "label": "Headcount local", "parent": "payroll_local", "type": "informativo", "sign": "count", "extern": True,
+     "note": "HC atribuible a la ciudad al cierre del mes (snapshot Aline/Lis). Informativo — no afecta local_opex."},
     {"key": "rent_atribuible", "label": "Rent (atribuible por ciudad)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True,
      "note": "Anclas vendor→ciudad de Danibot (docs/agrupaciones_por_ciudad.md): PATRIMONIOS AUTONOMOS FIDUCIARIA CORFICOLOMBIANA y EDIFICIO FIJAR 93B → Bogotá; INVERASTORGA → Valle De Aburrá; MUÑOZ ZEIGEN + EMPRESAS MUNICIPALES CALI → Cali; CUBICUS → Barranquilla. Cobertura ~87% del Rent CO."},
     {"key": "rent_nacional", "label": "Rent Nacional / no atribuible", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
