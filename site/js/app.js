@@ -1360,11 +1360,24 @@ function computeCompareRange(baseKey, mode) {
       labelComp: `${prevYear}-Q${prevQ}`,
     };
   }
-  // MoM / YoY: baseKey formato 'YYYY-MM'
+  // MoM / YoY / YTD: baseKey formato 'YYYY-MM'
   const m = /^(\d{4})-(\d{2})$/.exec(baseKey);
   if (!m) return null;
   const year = parseInt(m[1]);
   const month = parseInt(m[2]);
+
+  if (mode === 'YTD') {
+    // Acumulado ene-mes del año base vs ene-mes del año anterior.
+    const range = (y) => Array.from({length: month}, (_, i) => `${y}-${String(i + 1).padStart(2, '0')}`);
+    const monthAbbr = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][month - 1];
+    return {
+      baseMeses: range(year),
+      compMeses: range(year - 1),
+      labelBase: `${year} YTD (ene–${monthAbbr})`,
+      labelComp: `${year - 1} YTD (ene–${monthAbbr})`,
+    };
+  }
+
   let compY, compM;
   if (mode === 'YoY') {
     compY = year - 1;
