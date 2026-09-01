@@ -40,6 +40,10 @@ const state = {
   consRangeTo: null,
   consExpanded: new Set(['local_opex', 'payroll_local']),  // default expandidos: Corp OpEx clickeable + Headcount visible
   corpFacts: null,     // kpi_pnl_corp_facts.json (drill de OpEx Corp por tercero)
+  // Modo comparativa (nuevo 2026-09-01)
+  consVistaMode: 'temporal',   // 'temporal' | 'comparativa'
+  consCompareMode: 'MoM',      // 'MoM' | 'YoY' | 'QoQ'
+  consCompareBase: null,       // 'YYYY-MM' (MoM/YoY) o 'YYYY-Qn' (QoQ)
 };
 
 // líneas NO clickables (son sumas o counts, no tienen NIDs propios)
@@ -1270,6 +1274,55 @@ function setupConsControls() {
     }
     renderConsolidated();
   });
+
+  // ── Modo Comparativa: toggle vista + modo + selector base ─────
+  const populateCompareBase = () => {
+    const sel = document.getElementById('consCompareBase');
+    if (!sel) return;
+    let opts;
+    if (state.consCompareMode === 'QoQ') {
+      opts = consQsDisponibles();
+    } else {
+      opts = consMesesDisponibles();
+    }
+    // Default: último mes/Q disponible
+    if (!state.consCompareBase || !opts.includes(state.consCompareBase)) {
+      state.consCompareBase = opts[opts.length - 1];
+    }
+    sel.innerHTML = opts.map(o => `<option value="${o}">${o}</option>`).join('');
+    sel.value = state.consCompareBase;
+  };
+
+  document.querySelectorAll('#consVistaModeCtrl .seg-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.consVistaMode = b.dataset.vistaMode;
+      document.querySelectorAll('#consVistaModeCtrl .seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      document.getElementById('consRangoWrap').hidden = state.consVistaMode !== 'temporal';
+      document.getElementById('consCompareWrap').hidden = state.consVistaMode !== 'comparativa';
+      if (state.consVistaMode === 'comparativa') populateCompareBase();
+      renderConsolidated();
+    });
+  });
+
+  document.querySelectorAll('#consCompareModeCtrl .seg-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.consCompareMode = b.dataset.compareMode;
+      document.querySelectorAll('#consCompareModeCtrl .seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      populateCompareBase();
+      renderConsolidated();
+    });
+  });
+
+  const baseSel = document.getElementById('consCompareBase');
+  if (baseSel) {
+    baseSel.addEventListener('change', () => {
+      state.consCompareBase = baseSel.value;
+      renderConsolidated();
+    });
+  }
+  populateCompareBase();
 }
 
 function consMesesToShow() {
@@ -1282,10 +1335,238 @@ function consMesesToShow() {
   return all.slice(-n);
 }
 
+// ─── Modo Comparativa (MoM / YoY / QoQ) ──────────────────────────────
+// Devuelve {base, comparacion, labelBase, labelComp} donde base y comparacion
+// son o strings 'YYYY-MM' o listas de meses (para QoQ que suma 3 meses).
+function computeCompareRange(baseKey, mode) {
+  if (mode === 'QoQ') {
+    // baseKey formato 'YYYY-Qn'
+    const m = /^(\d{4})-Q([1-4])$/.exec(baseKey);
+    if (!m) return null;
+    const year = parseInt(m[1]);
+    const q = parseInt(m[2]);
+    const qToMonths = (y, qq) => {
+      const start = (qq - 1) * 3;
+      return [1, 2, 3].map(i => `${y}-${String(start + i).padStart(2, '0')}`);
+    };
+    const basemMeses = qToMonths(year, q);
+    const prevQ = q === 1 ? 4 : q - 1;
+    const prevYear = q === 1 ? year - 1 : year;
+    const compMeses = qToMonths(prevYear, prevQ);
+    return {
+      baseMeses: basemMeses,
+      compMeses: compMeses,
+      labelBase: `${year}-Q${q}`,
+      labelComp: `${prevYear}-Q${prevQ}`,
+    };
+  }
+  // MoM / YoY: baseKey formato 'YYYY-MM'
+  const m = /^(\d{4})-(\d{2})$/.exec(baseKey);
+  if (!m) return null;
+  const year = parseInt(m[1]);
+  const month = parseInt(m[2]);
+  let compY, compM;
+  if (mode === 'YoY') {
+    compY = year - 1;
+    compM = month;
+  } else {  // MoM
+    if (month === 1) {
+      compY = year - 1;
+      compM = 12;
+    } else {
+      compY = year;
+      compM = month - 1;
+    }
+  }
+  const baseMes = `${year}-${String(month).padStart(2, '0')}`;
+  const compMes = `${compY}-${String(compM).padStart(2, '0')}`;
+  return {
+    baseMeses: [baseMes],
+    compMeses: [compMes],
+    labelBase: baseMes,
+    labelComp: compMes,
+  };
+}
+
+// Suma valores de una lista de meses (para QoQ). Si un mes falta, se salta.
+function sumMeses(dataRegion, mesesList, key) {
+  let sum = 0;
+  let hasAny = false;
+  for (const m of mesesList) {
+    const v = (dataRegion[m] || {})[key];
+    if (v !== undefined && v !== null) {
+      sum += v;
+      hasAny = true;
+    }
+  }
+  return hasAny ? sum : null;
+}
+
+// Devuelve la lista de meses disponibles en el consolidado, ordenados.
+function consMesesDisponibles() {
+  return (state.consData.meses || []).slice();
+}
+
+// Devuelve la lista de Qs disponibles según meses. Un Q se lista si tiene al menos 1 mes.
+function consQsDisponibles() {
+  const meses = consMesesDisponibles();
+  const qs = new Set();
+  for (const m of meses) {
+    const [y, mo] = m.split('-').map(Number);
+    const q = Math.ceil(mo / 3);
+    qs.add(`${y}-Q${q}`);
+  }
+  return Array.from(qs).sort();
+}
+
+function renderConsolidatedComparativa() {
+  const range = computeCompareRange(state.consCompareBase, state.consCompareMode);
+  const head = document.getElementById('consHead');
+  const body = document.getElementById('consBody');
+  head.innerHTML = '';
+  body.innerHTML = '';
+  if (!range) {
+    head.appendChild(th('P&L Consolidado (COP MM)'));
+    body.innerHTML = '<tr><td colspan="99">Selecciona una base válida.</td></tr>';
+    return;
+  }
+  const dataRegion = (state.consData.vistas[state.consVista] || {})[state.consRegion] || {};
+  const structure = state.consData.estructura;
+
+  const byKey = {};
+  for (const r of structure) byKey[r.key] = r;
+  const hasChildren = new Set();
+  for (const r of structure) if (r.parent) hasChildren.add(r.parent);
+  const chainExpanded = (row) => {
+    let cur = row;
+    while (cur && cur.parent) {
+      if (!state.consExpanded.has(cur.parent)) return false;
+      cur = byKey[cur.parent];
+    }
+    return true;
+  };
+  const isTotalView = state.consRegion === 'Total';
+  const filaVisible = (row) => (!row.only_total || isTotalView) && chainExpanded(row);
+  const structureFiltered = structure.filter(filaVisible);
+
+  // Header
+  head.appendChild(th('P&L Consolidado (COP MM)'));
+  head.appendChild(th(range.labelBase));
+  head.appendChild(th(range.labelComp));
+  head.appendChild(th('Δ abs'));
+  head.appendChild(th('Δ %'));
+
+  for (const row of structureFiltered) {
+    const tr = document.createElement('tr');
+    tr.className = `tipo-${row.type}`;
+
+    // label + toggle + nota
+    const labelTd = document.createElement('td');
+    if (hasChildren.has(row.key)) {
+      const isExp = state.consExpanded.has(row.key);
+      const tog = document.createElement('span');
+      tog.className = 'toggle';
+      tog.textContent = isExp ? '▼' : '▶';
+      labelTd.appendChild(tog);
+      labelTd.appendChild(document.createTextNode(' ' + row.label));
+      labelTd.classList.add('expandable');
+      labelTd.addEventListener('click', () => {
+        if (state.consExpanded.has(row.key)) state.consExpanded.delete(row.key);
+        else state.consExpanded.add(row.key);
+        renderConsolidated();
+      });
+    } else {
+      labelTd.textContent = row.label;
+    }
+    if (row.note) {
+      const info = document.createElement('span');
+      info.className = 'row-note';
+      info.textContent = 'ⓘ';
+      info.title = row.note;
+      labelTd.appendChild(info);
+    }
+    tr.appendChild(labelTd);
+
+    const isCount = row.sign === 'count';
+    const valBase = sumMeses(dataRegion, range.baseMeses, row.key);
+    const valComp = sumMeses(dataRegion, range.compMeses, row.key);
+
+    // Base col
+    const cellBase = document.createElement('td');
+    cellBase.classList.add(`signo-${row.sign}`);
+    cellBase.textContent = fmt(valBase, isCount);
+    tr.appendChild(cellBase);
+
+    // Comp col
+    const cellComp = document.createElement('td');
+    cellComp.classList.add(`signo-${row.sign}`);
+    cellComp.textContent = fmt(valComp, isCount);
+    tr.appendChild(cellComp);
+
+    // Δ absoluto y %
+    const cellDelta = document.createElement('td');
+    const cellDeltaPct = document.createElement('td');
+    if (valBase === null || valComp === null) {
+      cellDelta.textContent = '—';
+      cellDeltaPct.textContent = '—';
+    } else {
+      const deltaAbs = valBase - valComp;
+      cellDelta.textContent = fmt(deltaAbs, isCount);
+      // pct: si comp=0, no calculable
+      let pctStr = '—';
+      if (valComp !== 0) {
+        const pct = (deltaAbs / Math.abs(valComp)) * 100;
+        pctStr = `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
+      }
+      // Signo bueno/malo según naturaleza del rubro:
+      //   income/net: subir es bueno (verde), bajar malo (rojo)
+      //   cost: bajar (menos costo, deltaAbs positivo = costo menos negativo) es bueno
+      //   count: neutro
+      let good = null;
+      if (row.sign === 'income' || row.sign === 'net') {
+        good = deltaAbs > 0;
+      } else if (row.sign === 'cost') {
+        good = deltaAbs > 0;  // deltaAbs > 0 significa que el costo (negativo) subió → menor costo
+      }
+      if (good !== null && deltaAbs !== 0) {
+        const cls = good ? 'delta-good' : 'delta-bad';
+        const arrow = good ? '▲' : '▼';
+        cellDelta.classList.add(cls);
+        cellDeltaPct.classList.add(cls);
+        cellDeltaPct.innerHTML = `${pctStr} <span class="delta-arrow">${arrow}</span>`;
+      } else {
+        cellDeltaPct.textContent = pctStr;
+      }
+    }
+    tr.appendChild(cellDelta);
+    tr.appendChild(cellDeltaPct);
+
+    body.appendChild(tr);
+  }
+
+  // Nota footer coberturas (reuso)
+  const lo = ((state.consData.meta || {}).local_opex) || {};
+  const inmoMeta = ((state.consData.meta || {}).inmo) || {};
+  const hcMeta = ((state.consData.meta || {}).habicredit) || {};
+  const bits = [];
+  bits.push(`Modo: <b>${state.consCompareMode}</b> · Base: <b>${range.labelBase}</b> vs <b>${range.labelComp}</b>`);
+  if (lo.payroll_cobertura_hasta) bits.push(`payroll hasta ${lo.payroll_cobertura_hasta} (Lis)`);
+  if (lo.headcount_cobertura_hasta) bits.push(`HC hasta ${lo.headcount_cobertura_hasta} (${lo.headcount_owner || 'Aline/Lis'})`);
+  if (lo.rent_cobertura_hasta) bits.push(`rent hasta ${lo.rent_cobertura_hasta} (Danibot, FX ${lo.fx_cop_per_usd})`);
+  if (lo.corp_opex_cobertura_hasta) bits.push(`corp opex hasta ${lo.corp_opex_cobertura_hasta} (bet_data_p2)`);
+  const nota = document.getElementById('consNota');
+  if (nota) nota.innerHTML = `<span style="color:var(--muted)">ⓘ</span> ${bits.join(' · ')}.`;
+}
+
 function renderConsolidated() {
   if (!state.consData) {
     const body = document.getElementById('consBody');
     if (body) body.innerHTML = '<tr><td colspan="99">No hay datos consolidados. Corre <code>make refresh</code>.</td></tr>';
+    return;
+  }
+  // Bifurcar según modo de vista
+  if (state.consVistaMode === 'comparativa') {
+    renderConsolidatedComparativa();
     return;
   }
   const meses = consMesesToShow();
