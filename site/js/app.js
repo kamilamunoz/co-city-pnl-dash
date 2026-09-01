@@ -38,11 +38,21 @@ const state = {
   consYear: null,
   consRangeFrom: null,
   consRangeTo: null,
-  consExpanded: new Set(),
+  consExpanded: new Set(['local_opex', 'payroll_local']),  // default expandidos: Corp OpEx clickeable + Headcount visible
+  corpFacts: null,     // kpi_pnl_corp_facts.json (drill de OpEx Corp por tercero)
 };
 
 // líneas NO clickables (son sumas o counts, no tienen NIDs propios)
 const NON_DRILLABLE = new Set(['invoiced_sales', 'holding_days']);
+
+// Sub-líneas de Corp OpEx que abren drill-down por tercero (nuevo modal alternativo).
+// Incluye el grupo `corp_opex` (que consolida todas las sub-métricas para esa celda).
+const CORP_OPEX_SUB_KEYS = [
+  'corp_opex_sales_ops', 'corp_opex_tech', 'corp_opex_prof_fees',
+  'corp_opex_courier', 'corp_opex_travel', 'corp_opex_empl_rel',
+  'corp_opex_other', 'corp_opex_nacional',
+];
+const CORP_OPEX_DRILLABLE_KEYS = new Set([...CORP_OPEX_SUB_KEYS, 'corp_opex']);
 
 // ─── login ────────────────────────────────────────────────────────────
 function unlockUI() {
@@ -75,14 +85,16 @@ function setupLogin() {
 
 // ─── data load ────────────────────────────────────────────────────────
 async function loadData() {
-  const [pnl, facts, cons] = await Promise.all([
+  const [pnl, facts, cons, corpFacts] = await Promise.all([
     fetch(`data/kpi_pnl.json?v=${Date.now()}`).then(r => r.json()),
     fetch(`data/kpi_pnl_facts.json?v=${Date.now()}`).then(r => r.json()),
     fetch(`data/kpi_pnl_consolidated.json?v=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`data/kpi_pnl_corp_facts.json?v=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   state.data = pnl;
   state.facts = facts;
   state.consData = cons;
+  state.corpFacts = corpFacts;
 
   // por default, seleccionar todas las regiones reales (sin Total) para comparativa
   state.cmpRegiones = new Set(
@@ -368,6 +380,15 @@ function openDrill(row, mes) {
   const colIdx = facts.columnas.indexOf(row.key);
   if (colIdx < 0) return;
 
+  // Restaurar tabla NID + limpiar tabla Corp si quedó de un drill anterior
+  const drillBody = document.querySelector('.drill-body');
+  if (drillBody) {
+    const nidTable = drillBody.querySelector('.drill-table:not(.drill-corp-table)');
+    if (nidTable) nidTable.style.display = '';
+    const corpTable = drillBody.querySelector('.drill-corp-table');
+    if (corpTable) corpTable.remove();
+  }
+
   // Índice de gmv_habi para calcular el % del GMV del NID
   const gmvIdx = facts.columnas.indexOf('gmv_habi');
 
@@ -444,6 +465,92 @@ function openDrill(row, mes) {
         <td class="pct">${pctGmvStr}</td>
         <td class="pct">${pctLinea.toFixed(1)}%</td>
         <td class="flag" title="${alerted ? 'Signo contrario al esperado (posible reversión / ajuste)' : ''}">${alerted ? '🚩' : ''}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('drillOverlay').hidden = false;
+  document.getElementById('drillPanel').hidden = false;
+}
+
+// Drill de Corp OpEx: reusa el drillPanel pero renderiza tabla por tercero.
+// `key` = sub-métrica (ej: 'corp_opex_travel') o grupo ('corp_opex'). `mes` = 'YYYY-MM'. `region` = key región.
+function openCorpDrill(row, mes, region) {
+  if (!state.corpFacts) return;
+  const cellData = ((state.corpFacts.data || {})[region] || {})[mes] || {};
+
+  // Si es el grupo `corp_opex`, consolidar TODAS las sub-métricas.
+  let entries = [];
+  if (row.key === 'corp_opex') {
+    for (const subKey of CORP_OPEX_SUB_KEYS) {
+      const subEntries = cellData[subKey] || [];
+      const subLabel = (state.consData.estructura.find(r => r.key === subKey) || {}).label || subKey;
+      for (const e of subEntries) {
+        entries.push({ ...e, submetrica: subLabel });
+      }
+    }
+    entries.sort((a, b) => Math.abs(b.monto) - Math.abs(a.monto));
+  } else {
+    entries = cellData[row.key] || [];
+  }
+  const total = entries.reduce((s, e) => s + (e.monto || 0), 0);
+
+  const regionLabel = (state.consData.regiones.find(r => r.key === region) || {}).label || region;
+  document.getElementById('drillContext').textContent = `${regionLabel} · ${mes}`;
+  document.getElementById('drillTitle').textContent = row.label;
+  document.getElementById('drillTotal').innerHTML =
+    `Total: <b>${fmt(total, false)}</b> COP · ${entries.length} tercero${entries.length === 1 ? '' : 's'}`;
+  document.getElementById('drillSummary').innerHTML = '';
+  const drillActions = document.getElementById('drillActions');
+  if (drillActions) drillActions.hidden = true;
+
+  // Ocultar tabla NID original y (re-)crear tabla Corp
+  const body = document.querySelector('.drill-body');
+  const nidTable = body.querySelector('.drill-table:not(.drill-corp-table)');
+  if (nidTable) nidTable.style.display = 'none';
+  const oldCorpTable = body.querySelector('.drill-corp-table');
+  if (oldCorpTable) oldCorpTable.remove();
+
+  const isGroup = row.key === 'corp_opex';
+  const table = document.createElement('table');
+  table.className = 'drill-table drill-corp-table';
+  const subColHeader = isGroup ? '<th style="text-align:left">Sub-línea</th>' : '';
+  const colspan = isGroup ? 8 : 7;
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th style="text-align:left">#</th>
+        <th style="text-align:left">Tercero</th>
+        ${subColHeader}
+        <th style="text-align:left">Cuenta</th>
+        <th style="text-align:left">Descripción</th>
+        <th style="text-align:right"># filas</th>
+        <th style="text-align:right">Monto (COP)</th>
+        <th style="text-align:right">% del total</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+  body.appendChild(table);
+  const tbody = table.querySelector('tbody');
+  if (entries.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="${colspan}" class="drill-empty">Sin terceros en esta celda.</td></tr>`;
+  } else {
+    entries.forEach((e, i) => {
+      const tr = document.createElement('tr');
+      const pct = total !== 0 ? (e.monto / total * 100) : 0;
+      const cleanDesc = (e.cuenta_desc || '').replace(/^\d+\.\s*Cuenta:\s*\d+\s*/, '').replace(/^\d+\.\s*Explicación\s*Other:\s*/, '');
+      const subCell = isGroup ? `<td class="small">${e.submetrica || ''}</td>` : '';
+      tr.innerHTML = `
+        <td>${i + 1}</td>
+        <td>${e.tercero || '(sin tercero)'}</td>
+        ${subCell}
+        <td>${e.cuenta || ''}</td>
+        <td class="small">${cleanDesc}</td>
+        <td style="text-align:right">${e.filas}</td>
+        <td style="text-align:right">${fmt(e.monto, false)}</td>
+        <td style="text-align:right">${pct.toFixed(1)}%</td>
       `;
       tbody.appendChild(tr);
     });
@@ -1277,6 +1384,19 @@ function renderConsolidated() {
           : 'Sin dato en fuente externa (Lis/Danibot) para este mes';
       }
 
+      // Drill-down por tercero para Corp OpEx
+      if (CORP_OPEX_DRILLABLE_KEYS.has(row.key) && val !== null && val !== 0 && state.corpFacts) {
+        const cellData = ((state.corpFacts.data || {})[state.consRegion] || {})[m] || {};
+        const hasFacts = row.key === 'corp_opex'
+          ? CORP_OPEX_SUB_KEYS.some(k => (cellData[k] || []).length > 0)
+          : (cellData[row.key] || []).length > 0;
+        if (hasFacts) {
+          cellEl.classList.add('clickable');
+          cellEl.title = 'Clic para ver desglose por tercero';
+          cellEl.addEventListener('click', () => openCorpDrill(row, m, state.consRegion));
+        }
+      }
+
       tr.appendChild(cellEl);
     }
     body.appendChild(tr);
@@ -1289,6 +1409,7 @@ function renderConsolidated() {
   if (lo.payroll_cobertura_hasta) bits.push(`payroll hasta ${lo.payroll_cobertura_hasta} (Lis)`);
   if (lo.headcount_cobertura_hasta) bits.push(`HC hasta ${lo.headcount_cobertura_hasta} (${lo.headcount_owner || 'Aline/Lis'})`);
   if (lo.rent_cobertura_hasta) bits.push(`rent hasta ${lo.rent_cobertura_hasta} (Danibot, FX ${lo.fx_cop_per_usd})`);
+  if (lo.corp_opex_cobertura_hasta) bits.push(`corp opex hasta ${lo.corp_opex_cobertura_hasta} (bet_data_p2)`);
   if (inmoMeta.inmo_generado_en) bits.push(`Inmo generado ${inmoMeta.inmo_generado_en.slice(0,10)}`);
   if (hcMeta.hc_generado_en) bits.push(`HabiCredit generado ${hcMeta.hc_generado_en.slice(0,10)}`);
   if (lo.marketing_pendiente) bits.push(`marketing <b>pendiente</b>`);
