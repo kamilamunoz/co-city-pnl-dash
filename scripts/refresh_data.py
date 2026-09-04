@@ -342,12 +342,13 @@ def _load_local_opex_co() -> tuple[pd.DataFrame | None, dict]:
             if corp_max_mes is None or mes_str > corp_max_mes:
                 corp_max_mes = mes_str
 
-            # Facts detallados por tercero+cuenta para drill-down
+            # Facts detallados por tercero+cuenta+detalle para drill-down
             tercero = _clean(getattr(row, "c_tercero", None)) or "(sin tercero)"
             cuenta = _clean(getattr(row, "c_cuenta", None))
             cuenta_desc = _clean(getattr(row, "c_cuenta_descripcion", None))
+            detalle = _clean(getattr(row, "c_descripcion_transaccion", None)) or "(sin detalle)"
             filas_row = int(getattr(row, "filas", 1) or 1)
-            fk = (tercero, cuenta)
+            fk = (tercero, cuenta, detalle)
 
             def _upsert(cell_key: tuple[str, str, str]) -> None:
                 cell = corp_facts.setdefault(cell_key, {})
@@ -355,7 +356,12 @@ def _load_local_opex_co() -> tuple[pd.DataFrame | None, dict]:
                     cell[fk]["monto"] += valor
                     cell[fk]["filas"] += filas_row
                 else:
-                    cell[fk] = {"cuenta_desc": cuenta_desc, "monto": valor, "filas": filas_row}
+                    cell[fk] = {
+                        "cuenta_desc": cuenta_desc,
+                        "detalle": detalle,
+                        "monto": valor,
+                        "filas": filas_row,
+                    }
 
             # 1) Fact en (region, mes, key) — región de destino real
             _upsert(k)
@@ -633,11 +639,12 @@ def main() -> None:
         nested: dict = {}
         for (region, mes, key), cell in corp_facts.items():
             entries = []
-            for (tercero, cuenta), agg in cell.items():
+            for (tercero, cuenta, detalle), agg in cell.items():
                 entries.append({
                     "tercero": tercero,
                     "cuenta": cuenta,
                     "cuenta_desc": agg["cuenta_desc"],
+                    "detalle": agg.get("detalle", detalle),
                     "monto": round(agg["monto"], 2),
                     "filas": agg["filas"],
                 })
@@ -648,7 +655,7 @@ def main() -> None:
             "meta": {
                 "generado_en": datetime.now().isoformat(timespec="seconds"),
                 "fuente": "papyrus-delivery-data.corp_gov_global.bet_data_p2",
-                "descripcion": "Drill-down por tercero/cuenta para líneas de Corp OpEx del consolidado CO. Se agrupa por (region, mes, sub-metrica) → lista de terceros. Ordenado por |monto| desc.",
+                "descripcion": "Drill-down por tercero/cuenta/detalle de transacción para líneas de Corp OpEx del consolidado CO. Se agrupa por (region, mes, sub-metrica) → lista de (tercero, cuenta, detalle). Ordenado por |monto| desc.",
                 "currency": "COP",
                 "cobertura_hasta": local_opex_meta.get("corp_opex_cobertura_hasta") if local_opex_meta else None,
             },
