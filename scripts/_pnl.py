@@ -340,15 +340,17 @@ PNL_STRUCTURE_CONSOLIDATED = [
     {"key": "cons_props_mm", "label": "# Properties MM", "parent": "cons_props_total", "type": "kpi", "sign": "count"},
     {"key": "cons_props_inmo", "label": "# Properties Inmo", "parent": "cons_props_total", "type": "kpi", "sign": "count"},
     {"key": "cons_props_hc", "label": "# Desembolsos HabiCredit", "parent": "cons_props_total", "type": "kpi", "sign": "count"},
+    {"key": "cons_desembolsado_hc", "label": "Valor Desembolsado HabiCredit (informativo)", "parent": "cons_props_total", "type": "informativo", "sign": "income",
+     "note": "Valor total de préstamos originados en el mes. NO es revenue de Habi ni suma al Volumen Intermediado — es headline operativo para dimensionar la escala del negocio HC. El revenue real de Habi es la comisión recibida (ver línea GMV consolidado)."},
     {"key": "cons_props_total", "label": "# Transacciones Total", "parent": None, "type": "total", "sign": "count"},
 
-    # ── volumen intermediado (heterogéneo: precio venta + comisión + préstamo) ──
+    # ── volumen intermediado (revenue por línea: precio venta MM + comisión Inmo + comisión HC) ──
     {"key": "cons_gmv_mm", "label": "GMV MM (precio de venta)", "parent": "cons_gmv_total", "type": "kpi", "sign": "income"},
     {"key": "cons_gmv_inmo", "label": "GMV Inmo (comisión bruta)", "parent": "cons_gmv_total", "type": "kpi", "sign": "income"},
-    {"key": "cons_gmv_hc", "label": "Valor Desembolsado HabiCredit", "parent": "cons_gmv_total", "type": "kpi", "sign": "income",
-     "note": "Valor total de préstamos originados en el mes. No es venta ni comisión — se suma al 'Volumen Intermediado' como headline number, pero conceptualmente es heterogéneo respecto a GMV MM (precio de venta) y GMV Inmo (comisión de brokerage)."},
+    {"key": "cons_gmv_hc", "label": "Comisión Recibida HabiCredit", "parent": "cons_gmv_total", "type": "kpi", "sign": "income",
+     "note": "Comisión bruta que Habi cobra al desembolsar cada crédito. Es el revenue estricto reconocido por Habi en HabiCredit (NO el valor del préstamo, que se muestra aparte como informativo)."},
     {"key": "cons_gmv_total", "label": "(=) Volumen Intermediado", "parent": None, "type": "total", "sign": "income",
-     "note": "Suma de conceptos heterogéneos (precio de venta MM + comisión Inmo + valor de préstamos HC). Útil como headline; no interpretar como revenue comparable línea a línea."},
+     "note": "Suma del revenue de las 3 líneas: precio de venta MM + comisión Inmo + comisión HabiCredit. Comparable línea a línea (todos revenue reconocido)."},
 
     # ── contribution por línea ──
     {"key": "cons_cm_mm", "label": "Contribution Margin MM", "parent": "cons_cm_total", "type": "kpi", "sign": "net"},
@@ -445,7 +447,8 @@ def build_consolidated_long(
         props_hc = hc.get("cant_desembolsos", 0.0)
         gmv_mm = mm.get("gmv_habi", 0.0)
         gmv_inmo = inmo.get("gmv_inmobiliaria", 0.0)
-        gmv_hc = hc.get("valor_desembolsado", 0.0)
+        gmv_hc = hc.get("comision_recibida", 0.0)
+        desembolsado_hc = hc.get("valor_desembolsado", 0.0)
         cm_mm = mm.get("contribution_margin", 0.0)
         cm_inmo = inmo.get("contribution_margin", 0.0)
         cm_hc = hc.get("margen_neto", 0.0)
@@ -454,6 +457,7 @@ def build_consolidated_long(
             {"region": region, "mes": mes, "key": "cons_props_mm", "valor": props_mm},
             {"region": region, "mes": mes, "key": "cons_props_inmo", "valor": props_inmo},
             {"region": region, "mes": mes, "key": "cons_props_hc", "valor": props_hc},
+            {"region": region, "mes": mes, "key": "cons_desembolsado_hc", "valor": desembolsado_hc},
             {"region": region, "mes": mes, "key": "cons_props_total", "valor": props_mm + props_inmo + props_hc},
             {"region": region, "mes": mes, "key": "cons_gmv_mm", "valor": gmv_mm},
             {"region": region, "mes": mes, "key": "cons_gmv_inmo", "valor": gmv_inmo},

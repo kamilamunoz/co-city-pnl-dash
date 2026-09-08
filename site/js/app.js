@@ -629,6 +629,7 @@ function cmpSourceConfig() {
       nidsKey: 'cons_props_total',
       pctExcluded: new Set([
         'cons_props_mm', 'cons_props_inmo', 'cons_props_hc', 'cons_props_total',
+        'cons_desembolsado_hc',
         'cons_gmv_mm', 'cons_gmv_inmo', 'cons_gmv_hc', 'cons_gmv_total',
       ]),
       insightKPIs: [
@@ -1621,6 +1622,7 @@ function renderConsolidated() {
 
   const showPctRow = (row) =>
     !['cons_props_mm', 'cons_props_inmo', 'cons_props_hc', 'cons_props_total',
+      'cons_desembolsado_hc',
       'cons_gmv_mm', 'cons_gmv_inmo', 'cons_gmv_hc', 'cons_gmv_total'].includes(row.key)
     && row.sign !== 'count';
 

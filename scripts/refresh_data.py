@@ -438,7 +438,13 @@ def _load_habicredit_co() -> tuple[pd.DataFrame | None, dict]:
     hc = json.loads(HABICREDIT_JSON_PATH.read_text(encoding="utf-8"))
     meta = {"hc_generado_en": hc.get("meta", {}).get("generated_at")}
 
-    keys_of_interest = {"cant_desembolsos", "valor_desembolsado", "margen_neto"}
+    keys_of_interest = {
+        "cant_desembolsos",
+        "valor_desembolsado",
+        "comision_recibida",
+        "comision_externos",
+        "margen_neto",
+    }
     rows: list[dict] = []
     # data structure: {ciudad: {mes: {kpi: valor}}}
     for ciudad_orig, months in hc.get("data", {}).items():
