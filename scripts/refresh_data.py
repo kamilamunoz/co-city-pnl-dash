@@ -44,6 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RAW_PATH = REPO_ROOT / "data" / "raw_apartment_co.parquet"
 RAW_MARKETING_PATH = REPO_ROOT / "data" / "raw_marketing_co.parquet"
 RAW_CORP_OPEX_PATH = REPO_ROOT / "data" / "raw_corp_opex_co.parquet"
+RAW_FEE_INCOME_PATH = REPO_ROOT / "data" / "raw_fee_income_co.parquet"
 OUT_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl.json"
 OUT_FACTS_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_facts.json"
 OUT_CONSOLIDATED_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_consolidated.json"
@@ -522,6 +523,18 @@ def main() -> None:
     log.info("Preparando (mes + region_norm) ...")
     df = prepare(raw)
     log.info("Después de prepare: %d filas (excluidas %d por fecha nula)", len(df), len(raw) - len(df))
+
+    # Fee Bono DDC (cuenta 41010122). Se joina por NID al tracker.
+    if RAW_FEE_INCOME_PATH.exists():
+        fee_df = pd.read_parquet(RAW_FEE_INCOME_PATH)
+        df = df.merge(fee_df, on="nid", how="left")
+        df["fee_income"] = pd.to_numeric(df["fee_income"], errors="coerce").fillna(0.0)
+        matched = int((df["fee_income"] != 0).sum())
+        log.info("Fee Bono DDC: %d NIDs con fee (de %d en tracker) · total COP %.0f",
+                 matched, len(df), df["fee_income"].sum())
+    else:
+        df["fee_income"] = 0.0
+        log.warning("data/raw_fee_income_co.parquet no existe — corre `make raw_fee`. Fee Bono DDC = 0.")
 
     mes_cutoff = os.environ.get("MES_CUTOFF", "").strip()
     if mes_cutoff:

@@ -85,7 +85,10 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
 PNL_STRUCTURE = [
     # ── ingresos ──
     {"key": "invoiced_sales", "label": "# Invoiced Sales", "parent": None, "type": "kpi", "sign": "count"},
-    {"key": "gmv_habi", "label": "(+) GMV Precio de Venta", "parent": None, "type": "kpi", "sign": "income"},
+    {"key": "gmv_sin_fee", "label": "(+) GMV Selling Price (sin Fee)", "parent": None, "type": "kpi", "sign": "income"},
+    {"key": "fee_bono_ddc", "label": "(+) Fee Bono DDC", "parent": None, "type": "kpi", "sign": "income",
+     "note": "Ingreso por Bono DDC (cuenta 41010122, subsidiaria HABI). Fuente: auxiliar_contable_co, joineado por NID. Suma al GMV Habi para el cálculo del Gross Profit. Arranca en sep-2025."},
+    {"key": "gmv_habi", "label": "(=) GMV Precio de Venta Habi", "parent": None, "type": "total", "sign": "income"},
     {"key": "purchase_price", "label": "(-) GMV Purchase Price", "parent": None, "type": "kpi", "sign": "cost"},
     {"key": "gross_profit", "label": "(=) Gross Profit", "parent": None, "type": "total", "sign": "net"},
 
@@ -162,7 +165,11 @@ def _line_values(df: pd.DataFrame, vista: str) -> dict[str, pd.Series]:
 
     # ── ingresos ──
     lines["invoiced_sales"] = pd.Series(1, index=df.index, dtype=float)  # count
-    lines["gmv_habi"] = _num(df["sell_price"])
+    lines["gmv_sin_fee"] = _num(df["sell_price"])
+    # Fee Bono DDC viene del auxiliar_contable (cuenta 41010122), joineado por
+    # NID en refresh_data.py. Se suma al GMV Habi como ingreso adicional.
+    lines["fee_bono_ddc"] = _num(df["fee_income"]) if "fee_income" in df.columns else pd.Series(0.0, index=df.index)
+    lines["gmv_habi"] = lines["gmv_sin_fee"] + lines["fee_bono_ddc"]
     lines["purchase_price"] = -_num(df["buy_price"])
     lines["gross_profit"] = lines["gmv_habi"] + lines["purchase_price"]
 
