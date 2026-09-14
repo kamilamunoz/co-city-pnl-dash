@@ -56,7 +56,7 @@ CORP_OPEX_UBIC_TO_REGION = {
     "MEDELLIN": "Valle De Aburrá",
     "CALI": "Cali",
     "BARRANQUILLA": "Barranquilla",
-    "CARTAGENA": "Otros",
+    "CARTAGENA": "Barranquilla",   # Costa Caribe, sin sede propia → agrupa con BAQ
     "BUCARAMANGA": "Otros",
     "ZIPAQUIRÁ": "Otros",
     # `COLOMBIA` y `Global COL` → bucket nacional (only_total)
